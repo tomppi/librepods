@@ -429,10 +429,11 @@ class AACPManager {
     }
 
     private fun parseRtBuddyHeartRateSample(packet: ByteArray): HeartRateSample? {
-        if (packet.size < 10) return null
+        if (packet.size !in 36..56) return null
         if (packet[0] != 0x04.toByte() || packet[1] != 0x00.toByte() ||
             packet[2] != 0x04.toByte() || packet[3] != 0x00.toByte()
         ) return null
+        if (packet[4] != Opcodes.HEADTRACKING) return null
 
         var offset = 0
         while (offset <= packet.size - 22) {
@@ -444,14 +445,20 @@ class AACPManager {
                 packet[offset + 3] == 0x12.toByte()
             ) {
                 val payloadStart = offset + 4
-                val payload = packet.copyOfRange(payloadStart, payloadStart + 18)
-                val statusTail = payload.copyOfRange(15, 18)
+                val payloadEnd = payloadStart + 18
+                if (payloadEnd != packet.size) return null
 
-                // Do not reject movement/head-movement-related bytes here. The only shape gate is
-                // the RTBuddy HEARTRATE(19) command with an 18-byte payload.
+                val payload = packet.copyOfRange(payloadStart, payloadEnd)
+                val statusTail = payload.copyOfRange(15, 18)
+                val bpm = payload[1].toInt() and 0xFF
+                if (bpm !in 1..300) return null
+
+                // Do not reject movement/head-movement-related bytes here. The only gates are
+                // the short RTBuddy container shape, HEARTRATE(19), and the 18-byte HR payload.
+                // Non-HR 0x17 packets intentionally fall through to the original head-tracking path.
                 return HeartRateSample(
                     timestampMillis = System.currentTimeMillis(),
-                    bpm = payload[1].toInt() and 0xFF,
+                    bpm = bpm,
                     payload = payload,
                     statusTail = statusTail,
                     rawPacket = packet.copyOf()

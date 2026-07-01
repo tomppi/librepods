@@ -32,6 +32,7 @@ import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -54,6 +55,7 @@ import me.kavishdevar.librepods.data.ControlCommandRepository
 import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
+import me.kavishdevar.librepods.health.HealthConnectHeartRateWriter
 import me.kavishdevar.librepods.services.AirPodsService
 
 data class HeartRatePoint(
@@ -90,6 +92,10 @@ data class AirPodsUiState(
     val heartRateStreamingEnabled: Boolean = false,
     val latestHeartRateBpm: Int? = null,
     val heartRateSamples: List<HeartRatePoint> = emptyList(),
+    val heartRateHealthConnectSyncEnabled: Boolean = false,
+    val heartRateHealthConnectAvailable: Boolean = false,
+    val heartRateHealthConnectPermissionGranted: Boolean = false,
+    val heartRateHealthConnectStatus: String = "Health Connect not checked yet",
 
     val eqData: FloatArray = floatArrayOf(),
 
@@ -167,6 +173,10 @@ val demoState = AirPodsUiState(
         HeartRatePoint(System.currentTimeMillis() - 5L * 60L * 1000L, 90, "100000"),
         HeartRatePoint(System.currentTimeMillis(), 88, "100000")
     ),
+    heartRateHealthConnectSyncEnabled = false,
+    heartRateHealthConnectAvailable = true,
+    heartRateHealthConnectPermissionGranted = false,
+    heartRateHealthConnectStatus = "Health Connect sync off",
 
     automaticEarDetectionEnabled = true,
     automaticConnectionEnabled = true,
@@ -225,6 +235,7 @@ class AirPodsViewModel(
         this.controlRepo = controlRepo
         this.sharedPreferences = sharedPreferences
         this.appContext = appContext
+        this.healthConnectHeartRateWriter = HealthConnectHeartRateWriter(appContext)
 
         observeBroadcasts()
         loadName()
@@ -253,6 +264,8 @@ class AirPodsViewModel(
     private val xposedRemotePref = XposedRemotePrefProvider.create()
 
     private lateinit var broadcastReceiver: BroadcastReceiver
+
+    private var healthConnectHeartRateWriter: HealthConnectHeartRateWriter? = null
 
 //    private val _cameraAction = MutableStateFlow(
 //        sharedPreferences.getString("camera_action", null)
@@ -304,6 +317,89 @@ class AirPodsViewModel(
         }
     }
 
+    fun refreshHeartRateHealthConnectStatus() {
+        if (isDemoMode) {
+            _uiState.update {
+                it.copy(
+                    heartRateHealthConnectAvailable = true,
+                    heartRateHealthConnectPermissionGranted = false,
+                    heartRateHealthConnectSyncEnabled = false,
+                    heartRateHealthConnectStatus = "Health Connect sync off"
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            val writer = healthConnectHeartRateWriter ?: return@launch
+            val available = withContext(Dispatchers.IO) { writer.isAvailable() }
+            val granted = if (available) {
+                withContext(Dispatchers.IO) { writer.hasWritePermission() }
+            } else {
+                false
+            }
+            val prefEnabled = sharedPreferences.getBoolean("heart_rate_health_connect_sync", false)
+            val syncEnabled = prefEnabled && available && granted
+            if (prefEnabled != syncEnabled) {
+                sharedPreferences.edit { putBoolean("heart_rate_health_connect_sync", syncEnabled) }
+            }
+            _uiState.update {
+                it.copy(
+                    heartRateHealthConnectAvailable = available,
+                    heartRateHealthConnectPermissionGranted = granted,
+                    heartRateHealthConnectSyncEnabled = syncEnabled,
+                    heartRateHealthConnectStatus = when {
+                        !available -> "Health Connect is not available on this device"
+                        !granted -> "Grant WRITE_HEART_RATE to enable sync"
+                        syncEnabled -> "Syncing new AirPods HR samples to Health Connect"
+                        else -> "Health Connect sync off"
+                    }
+                )
+            }
+        }
+    }
+
+    fun setHeartRateHealthConnectSyncEnabled(enabled: Boolean) {
+        if (isDemoMode) {
+            _uiState.update {
+                it.copy(
+                    heartRateHealthConnectSyncEnabled = enabled,
+                    heartRateHealthConnectStatus = if (enabled) {
+                        "Demo: Health Connect sync on"
+                    } else {
+                        "Health Connect sync off"
+                    }
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            val writer = healthConnectHeartRateWriter ?: return@launch
+            val available = withContext(Dispatchers.IO) { writer.isAvailable() }
+            val granted = if (available) {
+                withContext(Dispatchers.IO) { writer.hasWritePermission() }
+            } else {
+                false
+            }
+            val syncEnabled = enabled && available && granted
+            sharedPreferences.edit { putBoolean("heart_rate_health_connect_sync", syncEnabled) }
+            _uiState.update {
+                it.copy(
+                    heartRateHealthConnectAvailable = available,
+                    heartRateHealthConnectPermissionGranted = granted,
+                    heartRateHealthConnectSyncEnabled = syncEnabled,
+                    heartRateHealthConnectStatus = when {
+                        !available -> "Health Connect is not available on this device"
+                        !granted -> "Health Connect permission was not granted"
+                        syncEnabled -> "Syncing new AirPods HR samples to Health Connect"
+                        else -> "Health Connect sync off"
+                    }
+                )
+            }
+        }
+    }
+
     override fun onCleared() {
         listeners.forEach { (id, listener) ->
             controlRepo.remove(id, listener)
@@ -348,7 +444,8 @@ class AirPodsViewModel(
                 "name" -> loadName()
                 "off_listening_mode", "automatic_ear_detection", "automatic_connection_ctrl_cmd",
                 "head_gestures", "left_long_press_action", "right_long_press_action",
-                "dynamic_end_of_charge", "foss_upgraded", "premium_expiry_time" -> loadSharedPreferences()
+                "dynamic_end_of_charge", "foss_upgraded", "premium_expiry_time",
+                "heart_rate_health_connect_sync" -> loadSharedPreferences()
             }
         }
         sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
@@ -506,6 +603,25 @@ class AirPodsViewModel(
                         .takeLast(30 * 60)
                 )
             }
+
+            if (_uiState.value.heartRateHealthConnectSyncEnabled) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        healthConnectHeartRateWriter?.writeHeartRateSample(
+                            timestampMillis = sample.timestampMillis,
+                            bpm = sample.bpm
+                        )
+                    } catch (e: Exception) {
+                        _uiState.update {
+                            it.copy(
+                                heartRateHealthConnectSyncEnabled = false,
+                                heartRateHealthConnectStatus = "Health Connect write failed: ${e.message ?: e::class.simpleName}"
+                            )
+                        }
+                        sharedPreferences.edit { putBoolean("heart_rate_health_connect_sync", false) }
+                    }
+                }
+            }
         }
     }
 
@@ -544,6 +660,7 @@ class AirPodsViewModel(
         )
         val vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false)
         val dynamicEndOfCharge = sharedPreferences.getBoolean("dynamic_end_of_charge", false)
+        val heartRateHealthConnectSyncEnabled = sharedPreferences.getBoolean("heart_rate_health_connect_sync", false)
 
         val connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false)
 
@@ -557,6 +674,7 @@ class AirPodsViewModel(
                 rightAction = rightAction,
                 vendorIdHook = vendorIdHook,
                 dynamicEndOfCharge = dynamicEndOfCharge,
+                heartRateHealthConnectSyncEnabled = heartRateHealthConnectSyncEnabled,
                 connectionSuccessful = connectionSuccessful,
             )
         }

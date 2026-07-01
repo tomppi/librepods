@@ -12,6 +12,7 @@ package me.kavishdevar.librepods.presentation.screens
 
 import android.graphics.Paint
 import android.graphics.Typeface
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -47,6 +49,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.kavishdevar.librepods.health.HealthConnectHeartRateWriter
 import me.kavishdevar.librepods.presentation.components.StyledList
 import me.kavishdevar.librepods.presentation.components.StyledListItem
 import me.kavishdevar.librepods.presentation.components.StyledToggle
@@ -61,6 +64,20 @@ import kotlin.math.roundToInt
 @Composable
 fun HeartRateRoute(viewModel: AirPodsViewModel) {
     val state by viewModel.uiState.collectAsState()
+    val healthConnectPermissionsLauncher = rememberLauncherForActivityResult(
+        contract = HealthConnectHeartRateWriter.requestPermissionContract()
+    ) { grantedPermissions ->
+        viewModel.setHeartRateHealthConnectSyncEnabled(
+            grantedPermissions.containsAll(
+                HealthConnectHeartRateWriter.HEART_RATE_WRITE_PERMISSIONS
+            )
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshHeartRateHealthConnectStatus()
+    }
+
     val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
     val topPadding = if (m3eEnabled) 0.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 84.dp
     val bottomPadding = if (m3eEnabled) 0.dp else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp
@@ -74,9 +91,25 @@ fun HeartRateRoute(viewModel: AirPodsViewModel) {
             enabled = state.heartRateStreamingEnabled,
             latestBpm = state.latestHeartRateBpm,
             samples = state.heartRateSamples,
+            healthConnectSyncEnabled = state.heartRateHealthConnectSyncEnabled,
+            healthConnectAvailable = state.heartRateHealthConnectAvailable,
+            healthConnectStatus = state.heartRateHealthConnectStatus,
             topPadding = topPadding,
             bottomPadding = bottomPadding,
-            setEnabled = viewModel::setHeartRateStreamingEnabled
+            setEnabled = viewModel::setHeartRateStreamingEnabled,
+            setHealthConnectSyncEnabled = { enabled ->
+                if (enabled) {
+                    if (state.heartRateHealthConnectAvailable) {
+                        healthConnectPermissionsLauncher.launch(
+                            HealthConnectHeartRateWriter.HEART_RATE_WRITE_PERMISSIONS
+                        )
+                    } else {
+                        viewModel.refreshHeartRateHealthConnectStatus()
+                    }
+                } else {
+                    viewModel.setHeartRateHealthConnectSyncEnabled(false)
+                }
+            }
         )
     }
 }
@@ -86,9 +119,13 @@ fun HeartRateScreen(
     enabled: Boolean,
     latestBpm: Int?,
     samples: List<HeartRatePoint>,
+    healthConnectSyncEnabled: Boolean,
+    healthConnectAvailable: Boolean,
+    healthConnectStatus: String,
     topPadding: Dp = 16.dp,
     bottomPadding: Dp = 16.dp,
-    setEnabled: (Boolean) -> Unit
+    setEnabled: (Boolean) -> Unit,
+    setHealthConnectSyncEnabled: (Boolean) -> Unit
 ) {
     val scrollState = rememberScrollState()
 
@@ -105,6 +142,14 @@ fun HeartRateScreen(
             description = "Uses Librepods' AACP socket. No Gadgetbridge bridge, no exported sample log.",
             checked = enabled,
             onCheckedChange = setEnabled
+        )
+
+        StyledToggle(
+            label = "Sync to Health Connect",
+            description = healthConnectStatus,
+            checked = healthConnectSyncEnabled,
+            enabled = healthConnectAvailable,
+            onCheckedChange = setHealthConnectSyncEnabled
         )
 
         Column(
@@ -139,6 +184,11 @@ fun HeartRateScreen(
             StyledListItem(
                 name = "Graph is in-memory only",
                 description = "The 30-minute history is lost if the app/service process is killed.",
+                onClick = null
+            )
+            StyledListItem(
+                name = "Health Connect writes only new samples",
+                description = "Existing graph history is not backfilled; sync starts after permission is granted and the toggle is on.",
                 onClick = null
             )
             StyledListItem(
@@ -296,7 +346,11 @@ private fun HeartRateScreenPreview() {
                 enabled = true,
                 latestBpm = demoState.latestHeartRateBpm,
                 samples = demoState.heartRateSamples,
+                healthConnectSyncEnabled = demoState.heartRateHealthConnectSyncEnabled,
+                healthConnectAvailable = demoState.heartRateHealthConnectAvailable,
+                healthConnectStatus = demoState.heartRateHealthConnectStatus,
                 setEnabled = {},
+                setHealthConnectSyncEnabled = {},
                 bottomPadding = 16.dp
             )
         }
