@@ -651,6 +651,7 @@ obj/
 ### AndroidStudio Patch ###
 
 !/gradle/wrapper/gradle-wrapper.jar
+!/android/gradle/wrapper/gradle-wrapper.jar
 
 # End of https://www.toptal.com/developers/gitignore/api/qt,c++,clion,kotlin,python,android,pycharm,androidstudio,visualstudiocode,linux
 linux/.qmlls.ini

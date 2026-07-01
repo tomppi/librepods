@@ -1172,6 +1172,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 // TODO
             }
 
+            override fun onHeartRateSampleReceived(sample: AACPManager.HeartRateSample) {
+                // UI observation is handled through AACPManager.heartRateSampleCallback in AirPodsViewModel.
+                // Keeping this callback here prevents HR samples from falling into the unknown-packet path.
+            }
+
             override fun onCapabilitiesReceived(capabilities: List<Capability>) {
                 // TODO
             }

@@ -228,6 +228,36 @@ class AACPManager {
         }
     }
 
+    data class HeartRateSample(
+        val timestampMillis: Long,
+        val bpm: Int,
+        val payload: ByteArray,
+        val statusTail: ByteArray,
+        val rawPacket: ByteArray
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as HeartRateSample
+            return timestampMillis == other.timestampMillis &&
+                bpm == other.bpm &&
+                payload.contentEquals(other.payload) &&
+                statusTail.contentEquals(other.statusTail) &&
+                rawPacket.contentEquals(other.rawPacket)
+        }
+
+        override fun hashCode(): Int {
+            var result = timestampMillis.hashCode()
+            result = 31 * result + bpm
+            result = 31 * result + payload.contentHashCode()
+            result = 31 * result + statusTail.contentHashCode()
+            result = 31 * result + rawPacket.contentHashCode()
+            return result
+        }
+    }
+
+    var heartRateSampleCallback: ((HeartRateSample) -> Unit)? = null
+
     interface PacketCallback {
         fun onBatteryInfoReceived(batteryInfo: ByteArray)
         fun onEarDetectionReceived(earDetection: ByteArray)
@@ -235,6 +265,7 @@ class AACPManager {
         fun onControlCommandReceived(controlCommand: ByteArray)
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
+        fun onHeartRateSampleReceived(sample: HeartRateSample)
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -397,6 +428,41 @@ class AACPManager {
         return opcode + data
     }
 
+    private fun parseRtBuddyHeartRateSample(packet: ByteArray): HeartRateSample? {
+        if (packet.size < 10) return null
+        if (packet[0] != 0x04.toByte() || packet[1] != 0x00.toByte() ||
+            packet[2] != 0x04.toByte() || packet[3] != 0x00.toByte()
+        ) return null
+
+        var offset = 0
+        while (offset <= packet.size - 22) {
+            // Nested protobuf-like RTBuddy Command: field 1 = 0x13 / HEARTRATE(19),
+            // field 3 length = 0x12 / 18-byte payload.
+            if (packet[offset] == 0x08.toByte() &&
+                packet[offset + 1] == 0x13.toByte() &&
+                packet[offset + 2] == 0x1A.toByte() &&
+                packet[offset + 3] == 0x12.toByte()
+            ) {
+                val payloadStart = offset + 4
+                val payload = packet.copyOfRange(payloadStart, payloadStart + 18)
+                val statusTail = payload.copyOfRange(15, 18)
+
+                // Do not reject movement/head-movement-related bytes here. The only shape gate is
+                // the RTBuddy HEARTRATE(19) command with an 18-byte payload.
+                return HeartRateSample(
+                    timestampMillis = System.currentTimeMillis(),
+                    bpm = payload[1].toInt() and 0xFF,
+                    payload = payload,
+                    statusTail = statusTail,
+                    rawPacket = packet.copyOf()
+                )
+            }
+            offset++
+        }
+
+        return null
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
     fun receivePacket(packet: ByteArray) {
         if (!packet.toHexString().startsWith("04000400")) {
@@ -412,6 +478,16 @@ class AACPManager {
             Log.w(
                 TAG, "Received packet too short: ${packet.joinToString(" ") { "%02X".format(it) }}"
             )
+            return
+        }
+
+        parseRtBuddyHeartRateSample(packet)?.let { sample ->
+            Log.d(
+                TAG,
+                "RTBuddy HEARTRATE sample bpm=${sample.bpm} tail=${sample.statusTail.joinToString(" ") { "%02X".format(it) }}"
+            )
+            heartRateSampleCallback?.invoke(sample)
+            callback?.onHeartRateSampleReceived(sample)
             return
         }
 
@@ -655,6 +731,61 @@ class AACPManager {
             0x00,
             0x00,
             0x00
+        )
+    }
+
+    fun setHeartRateStreaming(enabled: Boolean): Boolean {
+        return if (enabled) {
+            val controlOk = sendHeartRateMonitorEnabled(true)
+            val startOk = sendStartHeartRate()
+            controlOk && startOk
+        } else {
+            val stopOk = sendStopHeartRate()
+            val controlOk = sendHeartRateMonitorEnabled(false)
+            stopOk && controlOk
+        }
+    }
+
+    fun sendHeartRateMonitorEnabled(enabled: Boolean): Boolean {
+        return sendControlCommand(
+            ControlCommandIdentifiers.HRM_STATE.value,
+            byteArrayOf((if (enabled) 0x01 else 0x00).toByte(), 0x00, 0x00, 0x00)
+        )
+    }
+
+    fun sendStartHeartRate(): Boolean {
+        return sendDataPacket(createStartHeartRatePacket())
+    }
+
+    fun createStartHeartRatePacket(): ByteArray {
+        return byteArrayOf(
+            Opcodes.HEADTRACKING, 0x00,
+            0x00, 0x00, 0x10, 0x00,
+            0x10, 0x00,
+            0x08, 0xE3.toByte(), 0x46,
+            0x42, 0x0B,
+            0x08, 0x13,
+            0x10, 0x02,
+            0x1A, 0x05,
+            0x01, 0x40, 0x42, 0x0F, 0x00
+        )
+    }
+
+    fun sendStopHeartRate(): Boolean {
+        return sendDataPacket(createStopHeartRatePacket())
+    }
+
+    fun createStopHeartRatePacket(): ByteArray {
+        return byteArrayOf(
+            Opcodes.HEADTRACKING, 0x00,
+            0x00, 0x00, 0x10, 0x00,
+            0x10, 0x00,
+            0x08, 0xED.toByte(), 0x46,
+            0x42, 0x0B,
+            0x08, 0x13,
+            0x10, 0x02,
+            0x1A, 0x05,
+            0x01, 0x00, 0x00, 0x00, 0x00
         )
     }
 

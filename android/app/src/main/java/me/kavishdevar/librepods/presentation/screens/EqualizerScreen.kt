@@ -195,7 +195,6 @@ fun EqualizerScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
 
         Crossfade (
             customEq.isEnabled()

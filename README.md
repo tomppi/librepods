@@ -259,3 +259,15 @@ If you see any misuse of the LibrePods name or logo, please report it to [me@kav
 The SF Pro font used in the Android app is the property of Apple Inc.. This will be removed in future versions of the app and replaced with an open alternative soon.
 
 AirPods, AirPods Pro, AirPods Max, and the AirPods logo are trademarks of Apple Inc. The LibrePods project is not affiliated with or endorsed by Apple Inc. in any way.
+
+## Experimental AirPods RTBuddy heart-rate page
+
+This patched tree adds an experimental Librepods-only AirPods heart-rate page as a separate main AirPods settings option directly under Equalizer. It sends the HRM control command and RTBuddy HEARTRATE(19) start/stop through Librepods' existing AACP socket. It does not include any Gadgetbridge bridge/broadcast code and it does not add persistent raw sample logging.
+
+Decoder shape: nested RTBuddy `08 13 1A 12 <18-byte payload>`, with `payload[1]` shown as BPM. The decoder intentionally does not reject samples based on head-movement/status-tail bytes; any HEARTRATE(19) frame with the 18-byte payload shape is graphed.
+
+### Root-level Gradle wrapper shim
+
+This patched tree includes a small root-level `./gradlew` shim that delegates to `android/gradlew`.
+This lets GitHub Actions steps such as `./gradlew packageReleaseArtifacts` work from the repository root,
+while still using the Android project's real Gradle wrapper and `android/gradle/wrapper/gradle-wrapper.jar`.

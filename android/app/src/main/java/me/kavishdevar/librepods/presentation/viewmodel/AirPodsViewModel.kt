@@ -56,6 +56,12 @@ import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.services.AirPodsService
 
+data class HeartRatePoint(
+    val timestampMillis: Long,
+    val bpm: Int,
+    val statusTailHex: String
+)
+
 @Suppress("ArrayInDataClass")
 data class AirPodsUiState(
     val deviceName: String = "AirPods",
@@ -80,6 +86,10 @@ data class AirPodsUiState(
 
     val headTrackingActive: Boolean = false,
     val headGesturesEnabled: Boolean = true,
+
+    val heartRateStreamingEnabled: Boolean = false,
+    val latestHeartRateBpm: Int? = null,
+    val heartRateSamples: List<HeartRatePoint> = emptyList(),
 
     val eqData: FloatArray = floatArrayOf(),
 
@@ -146,6 +156,17 @@ val demoState = AirPodsUiState(
 
     headTrackingActive = true,
     headGesturesEnabled = true,
+
+    heartRateStreamingEnabled = false,
+    latestHeartRateBpm = 88,
+    heartRateSamples = listOf(
+        HeartRatePoint(System.currentTimeMillis() - 25L * 60L * 1000L, 82, "100000"),
+        HeartRatePoint(System.currentTimeMillis() - 20L * 60L * 1000L, 86, "100000"),
+        HeartRatePoint(System.currentTimeMillis() - 15L * 60L * 1000L, 91, "100000"),
+        HeartRatePoint(System.currentTimeMillis() - 10L * 60L * 1000L, 88, "100000"),
+        HeartRatePoint(System.currentTimeMillis() - 5L * 60L * 1000L, 90, "100000"),
+        HeartRatePoint(System.currentTimeMillis(), 88, "100000")
+    ),
 
     automaticEarDetectionEnabled = true,
     automaticConnectionEnabled = true,
@@ -269,11 +290,26 @@ class AirPodsViewModel(
         }
     }
 
+    fun setHeartRateStreamingEnabled(enabled: Boolean) {
+        if (isDemoMode) {
+            _uiState.update { it.copy(heartRateStreamingEnabled = enabled) }
+            return
+        }
+
+        val sent = service.aacpManager.setHeartRateStreaming(enabled)
+        _uiState.update {
+            it.copy(
+                heartRateStreamingEnabled = if (sent) enabled else it.heartRateStreamingEnabled
+            )
+        }
+    }
+
     override fun onCleared() {
         listeners.forEach { (id, listener) ->
             controlRepo.remove(id, listener)
         }
         service.aacpManager.customEqCallback = null
+        service.aacpManager.heartRateSampleCallback = null
         appContext.unregisterReceiver(broadcastReceiver)
     }
 
@@ -457,6 +493,19 @@ class AirPodsViewModel(
         }
         service.aacpManager.customEqCallback = { customEq ->
             _uiState.update { it.copy(customEq = customEq) }
+        }
+        service.aacpManager.heartRateSampleCallback = { sample ->
+            val cutoff = System.currentTimeMillis() - 30L * 60L * 1000L
+            val tail = sample.statusTail.joinToString("") { "%02X".format(it) }
+            val point = HeartRatePoint(sample.timestampMillis, sample.bpm, tail)
+            _uiState.update { state ->
+                state.copy(
+                    latestHeartRateBpm = sample.bpm,
+                    heartRateSamples = (state.heartRateSamples + point)
+                        .filter { it.timestampMillis >= cutoff }
+                        .takeLast(30 * 60)
+                )
+            }
         }
     }
 
