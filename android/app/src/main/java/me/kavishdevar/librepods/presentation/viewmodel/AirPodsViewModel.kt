@@ -335,7 +335,7 @@ class AirPodsViewModel(
             return
         }
 
-        if (!_uiState.value.heartRateEarbudsInEar) {
+        if (!_uiState.value.heartRateEarbudsInEar || service.isRtBuddyControlSuppressed()) {
             _uiState.update {
                 it.copy(
                     heartRateStreamingEnabled = false,
