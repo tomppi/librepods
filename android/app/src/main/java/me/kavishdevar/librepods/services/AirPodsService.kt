@@ -55,7 +55,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelUuid
-import android.os.SystemClock
 import android.os.UserHandle
 import android.provider.Settings
 import android.telecom.TelecomManager
@@ -163,8 +162,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var otherDeviceTookOver = false
     private val heartRateEarRemovalHandler = Handler(Looper.getMainLooper())
     private var heartRateEarRemovalStopRunnable: Runnable? = null
-    private var rtBuddyControlSuppressedUntilMillis: Long = 0L
-
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -1252,35 +1249,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         })
     }
 
-    fun isRtBuddyControlSuppressed(): Boolean {
-        return SystemClock.elapsedRealtime() < rtBuddyControlSuppressedUntilMillis
-    }
-
-    private fun remainingRtBuddyControlSuppressionMs(): Long {
-        return (rtBuddyControlSuppressedUntilMillis - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
-    }
-
-    private fun startRtBuddyReconnectCooldown(reason: String, durationMs: Long = 10_000L) {
-        val now = SystemClock.elapsedRealtime()
-        val until = now + durationMs
-        if (until > rtBuddyControlSuppressedUntilMillis) {
-            rtBuddyControlSuppressedUntilMillis = until
-        }
-        Log.d(
-            TAG,
-            "Suppressing RTBuddy/AACP takeover for ${remainingRtBuddyControlSuppressionMs()} ms after $reason"
-        )
-    }
-
-    private fun shouldSuppressRtBuddyControl(action: String, allowManual: Boolean = false): Boolean {
-        if (allowManual || !isRtBuddyControlSuppressed()) return false
-        Log.d(
-            TAG,
-            "Suppressing $action for ${remainingRtBuddyControlSuppressionMs()} ms while AirPods reconnect after HR/wear-state change"
-        )
-        return true
-    }
-
     private fun cancelHeartRateEarRemovalSafetyStop() {
         heartRateEarRemovalStopRunnable?.let { heartRateEarRemovalHandler.removeCallbacks(it) }
         heartRateEarRemovalStopRunnable = null
@@ -1293,8 +1261,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
-
-        startRtBuddyReconnectCooldown("earbud_removed_while_hr_enabled")
         if (heartRateEarRemovalStopRunnable != null) return
 
         val stopRunnable = Runnable {
@@ -1304,7 +1270,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val stillBothInEar = earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
                 earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
             if (!stillBothInEar && aacpManager.heartRateStreamingRequested) {
-                startRtBuddyReconnectCooldown("debounced_earbud_removed_while_hr_enabled")
                 aacpManager.forceStopHeartRateStreaming()
                 broadcastHeartRateStateChanged(
                     enabled = false,
@@ -1335,9 +1300,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
         earDetectionNotification.setStatus(earDetection)
         scheduleHeartRateStopIfEarbudRemoved(newInEarData)
-        if (newInEarData == listOf(true, true) && inEarData.contains(false) && isRtBuddyControlSuppressed()) {
-            startRtBuddyReconnectCooldown("earbuds_reinserted_after_hr_safety_stop", 5_000L)
-        }
 
         if (config.earDetectionEnabled) {
             inEar = newInEarData == listOf(true, true)
@@ -1361,13 +1323,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             if (newInEarData.contains(true) && inEarData == listOf(false, false)) {
-                if (shouldSuppressRtBuddyControl("immediate_audio_connect_after_reinsert")) {
-                    Log.d(TAG, "Skipping immediate Librepods audio connect while AirPods reconnect cooldown is active")
-                } else {
-                    connectAudio(this@AirPodsService, device)
-                    justEnabledA2dp = true
-                    registerA2dpConnectionReceiver()
-                }
+                connectAudio(this@AirPodsService, device)
+                justEnabledA2dp = true
+                registerA2dpConnectionReceiver()
                 if (MediaController.getMusicActive()) {
                     MediaController.userPlayedTheMedia = true
                 }
@@ -2556,14 +2514,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false
     ) {
-        if (shouldSuppressRtBuddyControl(
-                "takeOver($takingOverFor, startHeadTrackingAgain=$startHeadTrackingAgain)",
-                allowManual = manualTakeOverAfterReversed
-            )
-        ) {
-            return
-        }
-
         if (takingOverFor == "reverse") {
             aacpManager.sendControlCommand(
                 AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
@@ -2635,9 +2585,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     } else if (startHeadTrackingAgain) {
                         Log.d(TAG, "Starting head tracking again after taking control")
                         Handler(Looper.getMainLooper()).postDelayed({
-                            if (!shouldSuppressRtBuddyControl("delayed_start_head_tracking_after_takeover")) {
-                                startHeadTracking()
-                            }
+                            startHeadTracking()
                         }, 500)
                     }
                     delay(1000) // should ideally have a callback when it's taken over because for some reason android doesn't dispatch when it's paused
@@ -3257,11 +3205,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var isHeadTrackingActive = false
 
     fun startHeadTracking() {
-        if (shouldSuppressRtBuddyControl("startHeadTracking")) {
-            isHeadTrackingActive = false
-            return
-        }
-
         isHeadTrackingActive = true
         val useAlternatePackets =
             sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true)
