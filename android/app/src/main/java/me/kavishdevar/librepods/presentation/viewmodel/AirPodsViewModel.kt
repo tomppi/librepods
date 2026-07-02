@@ -32,6 +32,8 @@ import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,9 +62,10 @@ import me.kavishdevar.librepods.services.AirPodsService
 
 data class HeartRatePoint(
     val timestampMillis: Long,
-    val bpm: Int,
-    val statusTailHex: String
+    val bpm: Int
 )
+
+private const val HEART_RATE_RECEIVING_WINDOW_MS = 10_000L
 
 @Suppress("ArrayInDataClass")
 data class AirPodsUiState(
@@ -91,6 +94,8 @@ data class AirPodsUiState(
 
     val heartRateStreamingEnabled: Boolean = false,
     val latestHeartRateBpm: Int? = null,
+    val latestHeartRateSampleMillis: Long? = null,
+    val heartRateReceiving: Boolean = false,
     val heartRateSamples: List<HeartRatePoint> = emptyList(),
     val heartRateHealthConnectSyncEnabled: Boolean = false,
     val heartRateHealthConnectAvailable: Boolean = false,
@@ -166,12 +171,12 @@ val demoState = AirPodsUiState(
     heartRateStreamingEnabled = false,
     latestHeartRateBpm = 88,
     heartRateSamples = listOf(
-        HeartRatePoint(System.currentTimeMillis() - 25L * 60L * 1000L, 82, "100000"),
-        HeartRatePoint(System.currentTimeMillis() - 20L * 60L * 1000L, 86, "100000"),
-        HeartRatePoint(System.currentTimeMillis() - 15L * 60L * 1000L, 91, "100000"),
-        HeartRatePoint(System.currentTimeMillis() - 10L * 60L * 1000L, 88, "100000"),
-        HeartRatePoint(System.currentTimeMillis() - 5L * 60L * 1000L, 90, "100000"),
-        HeartRatePoint(System.currentTimeMillis(), 88, "100000")
+        HeartRatePoint(System.currentTimeMillis() - 25L * 60L * 1000L, 82),
+        HeartRatePoint(System.currentTimeMillis() - 20L * 60L * 1000L, 86),
+        HeartRatePoint(System.currentTimeMillis() - 15L * 60L * 1000L, 91),
+        HeartRatePoint(System.currentTimeMillis() - 10L * 60L * 1000L, 88),
+        HeartRatePoint(System.currentTimeMillis() - 5L * 60L * 1000L, 90),
+        HeartRatePoint(System.currentTimeMillis(), 88)
     ),
     heartRateHealthConnectSyncEnabled = false,
     heartRateHealthConnectAvailable = true,
@@ -242,6 +247,7 @@ class AirPodsViewModel(
         loadInstance()
         loadSharedPreferences()
         observeAACP()
+        startHeartRateHealthConnectBatchUploader()
         loadCurrentStatus()
         loadEq()
         loadATT()
@@ -266,6 +272,10 @@ class AirPodsViewModel(
     private lateinit var broadcastReceiver: BroadcastReceiver
 
     private var healthConnectHeartRateWriter: HealthConnectHeartRateWriter? = null
+    private val pendingHeartRateSamplesLock = Any()
+    private val pendingHeartRateSamples = mutableListOf<HealthConnectHeartRateWriter.HeartRateSample>()
+    private var heartRateHealthConnectBatchJob: Job? = null
+
 
 //    private val _cameraAction = MutableStateFlow(
 //        sharedPreferences.getString("camera_action", null)
@@ -312,7 +322,20 @@ class AirPodsViewModel(
         val sent = service.aacpManager.setHeartRateStreaming(enabled)
         _uiState.update {
             it.copy(
-                heartRateStreamingEnabled = if (sent) enabled else it.heartRateStreamingEnabled
+                heartRateStreamingEnabled = if (sent) enabled else it.heartRateStreamingEnabled,
+                heartRateReceiving = if (sent && !enabled) false else it.heartRateReceiving
+            )
+        }
+    }
+
+    fun refreshHeartRateRuntimeState() {
+        val latestSampleMillis = _uiState.value.latestHeartRateSampleMillis
+        val receiving = latestSampleMillis != null &&
+            System.currentTimeMillis() - latestSampleMillis <= HEART_RATE_RECEIVING_WINDOW_MS
+        _uiState.update {
+            it.copy(
+                heartRateReceiving = receiving,
+                heartRateStreamingEnabled = if (receiving) true else it.heartRateStreamingEnabled
             )
         }
     }
@@ -383,6 +406,7 @@ class AirPodsViewModel(
                 false
             }
             val syncEnabled = enabled && available && granted
+            if (!syncEnabled) clearPendingHeartRateSamples()
             sharedPreferences.edit { putBoolean("heart_rate_health_connect_sync", syncEnabled) }
             _uiState.update {
                 it.copy(
@@ -400,7 +424,50 @@ class AirPodsViewModel(
         }
     }
 
+    private fun startHeartRateHealthConnectBatchUploader() {
+        if (heartRateHealthConnectBatchJob != null) return
+        heartRateHealthConnectBatchJob = viewModelScope.launch {
+            while (true) {
+                delay(60_000L)
+                flushPendingHeartRateSamplesToHealthConnect()
+                refreshHeartRateRuntimeState()
+            }
+        }
+    }
+
+    private suspend fun flushPendingHeartRateSamplesToHealthConnect() {
+        if (!_uiState.value.heartRateHealthConnectSyncEnabled) {
+            clearPendingHeartRateSamples()
+            return
+        }
+
+        val batch = synchronized(pendingHeartRateSamplesLock) {
+            pendingHeartRateSamples.toList().also { pendingHeartRateSamples.clear() }
+        }
+        if (batch.isEmpty()) return
+
+        try {
+            withContext(Dispatchers.IO) {
+                healthConnectHeartRateWriter?.writeHeartRateSamples(batch)
+            }
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(
+                    heartRateHealthConnectSyncEnabled = false,
+                    heartRateHealthConnectStatus = "Health Connect write failed: ${e.message ?: e::class.simpleName}"
+                )
+            }
+            sharedPreferences.edit { putBoolean("heart_rate_health_connect_sync", false) }
+            clearPendingHeartRateSamples()
+        }
+    }
+
+    private fun clearPendingHeartRateSamples() {
+        synchronized(pendingHeartRateSamplesLock) { pendingHeartRateSamples.clear() }
+    }
+
     override fun onCleared() {
+        heartRateHealthConnectBatchJob?.cancel()
         listeners.forEach { (id, listener) ->
             controlRepo.remove(id, listener)
         }
@@ -592,34 +659,21 @@ class AirPodsViewModel(
             _uiState.update { it.copy(customEq = customEq) }
         }
         service.aacpManager.heartRateSampleCallback = { sample ->
-            val cutoff = System.currentTimeMillis() - 30L * 60L * 1000L
-            val tail = sample.statusTail.joinToString("") { "%02X".format(it) }
-            val point = HeartRatePoint(sample.timestampMillis, sample.bpm, tail)
             _uiState.update { state ->
                 state.copy(
+                    heartRateStreamingEnabled = true,
+                    heartRateReceiving = true,
                     latestHeartRateBpm = sample.bpm,
-                    heartRateSamples = (state.heartRateSamples + point)
-                        .filter { it.timestampMillis >= cutoff }
-                        .takeLast(30 * 60)
+                    latestHeartRateSampleMillis = sample.timestampMillis
                 )
             }
 
             if (_uiState.value.heartRateHealthConnectSyncEnabled) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        healthConnectHeartRateWriter?.writeHeartRateSample(
-                            timestampMillis = sample.timestampMillis,
-                            bpm = sample.bpm
-                        )
-                    } catch (e: Exception) {
-                        _uiState.update {
-                            it.copy(
-                                heartRateHealthConnectSyncEnabled = false,
-                                heartRateHealthConnectStatus = "Health Connect write failed: ${e.message ?: e::class.simpleName}"
-                            )
-                        }
-                        sharedPreferences.edit { putBoolean("heart_rate_health_connect_sync", false) }
-                    }
+                synchronized(pendingHeartRateSamplesLock) {
+                    pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
+                        timestampMillis = sample.timestampMillis,
+                        bpm = sample.bpm
+                    )
                 }
             }
         }

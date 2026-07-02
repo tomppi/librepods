@@ -96,7 +96,6 @@ fun AudioSettings(
 
                 StyledListItem(
                     name = "AirPods heart rate",
-                    description = "On/off toggle and 30-minute BPM graph",
                     onClick = navigateToHeartRate,
                 )
             }

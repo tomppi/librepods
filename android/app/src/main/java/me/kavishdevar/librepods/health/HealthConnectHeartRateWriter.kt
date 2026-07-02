@@ -20,6 +20,8 @@ import java.time.Instant
 import java.time.ZoneId
 
 class HealthConnectHeartRateWriter(private val context: Context) {
+    data class HeartRateSample(val timestampMillis: Long, val bpm: Int)
+
     companion object {
         val HEART_RATE_WRITE_PERMISSIONS: Set<String> = setOf(
             HealthPermission.getWritePermission(HeartRateRecord::class)
@@ -39,28 +41,38 @@ class HealthConnectHeartRateWriter(private val context: Context) {
             .containsAll(HEART_RATE_WRITE_PERMISSIONS)
     }
 
-    suspend fun writeHeartRateSample(timestampMillis: Long, bpm: Int) {
+    suspend fun writeHeartRateSamples(samples: List<HeartRateSample>) {
         if (!isAvailable()) return
-        if (bpm !in 1..300) return
 
-        val start = Instant.ofEpochMilli(timestampMillis)
-        val end = start.plusMillis(1)
-        val zoneOffset = ZoneId.systemDefault().rules.getOffset(start)
+        val records = samples
+            .filter { it.bpm in 1..300 }
+            .sortedBy { it.timestampMillis }
+            .map { sample ->
+                val start = Instant.ofEpochMilli(sample.timestampMillis)
+                val end = start.plusMillis(1)
+                val zoneOffset = ZoneId.systemDefault().rules.getOffset(start)
 
-        val record = HeartRateRecord(
-            startTime = start,
-            startZoneOffset = zoneOffset,
-            endTime = end,
-            endZoneOffset = zoneOffset,
-            samples = listOf(
-                HeartRateRecord.Sample(
-                    time = start,
-                    beatsPerMinute = bpm.toLong()
+                HeartRateRecord(
+                    startTime = start,
+                    startZoneOffset = zoneOffset,
+                    endTime = end,
+                    endZoneOffset = zoneOffset,
+                    samples = listOf(
+                        HeartRateRecord.Sample(
+                            time = start,
+                            beatsPerMinute = sample.bpm.toLong()
+                        )
+                    ),
+                    metadata = Metadata.manualEntry()
                 )
-            ),
-            metadata = Metadata.manualEntry()
-        )
+            }
 
-        client.insertRecords(listOf(record))
+        if (records.isNotEmpty()) {
+            client.insertRecords(records)
+        }
+    }
+
+    suspend fun writeHeartRateSample(timestampMillis: Long, bpm: Int) {
+        writeHeartRateSamples(listOf(HeartRateSample(timestampMillis, bpm)))
     }
 }
