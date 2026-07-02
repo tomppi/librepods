@@ -764,16 +764,6 @@ class AACPManager {
         return stopOk && controlOk
     }
 
-    /**
-     * Clear the local HR requested state without sending any AACP/RTBuddy packets.
-     *
-     * This is intentionally used for ear-removal crash testing: if the active/host
-     * bud is being removed, sending HR stop packets during the AirPods' own role
-     * switch can race the firmware and trigger a classic-link reconnect storm.
-     */
-    fun markHeartRateStreamingStoppedLocally() {
-        heartRateStreamingRequested = false
-    }
 
     fun sendHeartRateMonitorEnabled(enabled: Boolean): Boolean {
         return sendControlCommand(

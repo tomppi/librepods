@@ -373,19 +373,10 @@ class AirPodsViewModel(
         val receiving = latestSampleMillis != null &&
             System.currentTimeMillis() - latestSampleMillis <= HEART_RATE_RECEIVING_WINDOW_MS
         _uiState.update {
-            if (!it.heartRateEarbudsInEar) {
-                it.copy(
-                    heartRateReceiving = false,
-                    heartRateStreamingEnabled = false,
-                    latestHeartRateBpm = null,
-                    latestHeartRateSampleMillis = null
-                )
-            } else {
-                it.copy(
-                    heartRateReceiving = receiving,
-                    heartRateStreamingEnabled = if (receiving) true else it.heartRateStreamingEnabled
-                )
-            }
+            it.copy(
+                heartRateReceiving = receiving,
+                heartRateStreamingEnabled = if (receiving) true else it.heartRateStreamingEnabled
+            )
         }
     }
 
@@ -607,20 +598,10 @@ class AirPodsViewModel(
 
                     AirPodsNotifications.EAR_DETECTION_DATA -> {
                         val data = intent.getByteArrayExtra("data") ?: return
-                        val earbudsInEar = data.size >= 2 &&
-                            data[0] == 0x00.toByte() && data[1] == 0x00.toByte()
+                        val anyEarbudInEar = data.size >= 2 &&
+                            (data[0] == 0x00.toByte() || data[1] == 0x00.toByte())
                         _uiState.update {
-                            if (earbudsInEar) {
-                                it.copy(heartRateEarbudsInEar = true)
-                            } else {
-                                it.copy(
-                                    heartRateEarbudsInEar = false,
-                                    heartRateStreamingEnabled = false,
-                                    heartRateReceiving = false,
-                                    latestHeartRateBpm = null,
-                                    latestHeartRateSampleMillis = null
-                                )
-                            }
+                            it.copy(heartRateEarbudsInEar = anyEarbudInEar)
                         }
                     }
 
@@ -763,26 +744,21 @@ class AirPodsViewModel(
             _uiState.update { it.copy(customEq = customEq) }
         }
         service.aacpManager.heartRateSampleCallback = { sample ->
-            if (!_uiState.value.heartRateEarbudsInEar) {
-                service.passivelyStopHeartRateAfterEarRemoval("late_hr_sample_out_of_ear_passive")
-                handleHeartRateForcedOff()
-            } else {
-                _uiState.update { state ->
-                    state.copy(
-                        heartRateStreamingEnabled = true,
-                        heartRateReceiving = true,
-                        latestHeartRateBpm = sample.bpm,
-                        latestHeartRateSampleMillis = sample.timestampMillis
-                    )
-                }
+            _uiState.update { state ->
+                state.copy(
+                    heartRateStreamingEnabled = true,
+                    heartRateReceiving = true,
+                    latestHeartRateBpm = sample.bpm,
+                    latestHeartRateSampleMillis = sample.timestampMillis
+                )
+            }
 
-                if (_uiState.value.heartRateHealthConnectSyncEnabled) {
-                    synchronized(pendingHeartRateSamplesLock) {
-                        pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
-                            timestampMillis = sample.timestampMillis,
-                            bpm = sample.bpm
-                        )
-                    }
+            if (_uiState.value.heartRateHealthConnectSyncEnabled) {
+                synchronized(pendingHeartRateSamplesLock) {
+                    pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
+                        timestampMillis = sample.timestampMillis,
+                        bpm = sample.bpm
+                    )
                 }
             }
         }

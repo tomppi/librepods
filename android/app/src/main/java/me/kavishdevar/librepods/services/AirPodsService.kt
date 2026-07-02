@@ -160,8 +160,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var cameraActive = false
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
-    private val heartRateEarRemovalHandler = Handler(Looper.getMainLooper())
-    private var heartRateEarRemovalStopRunnable: Runnable? = null
     private val heartRateAutoStartHandler = Handler(Looper.getMainLooper())
     private var heartRateAutoStartRunnable: Runnable? = null
     private var aacpConnectInProgress = false
@@ -331,7 +329,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 if (rightInEar) 0x00.toByte() else 0x01.toByte()
             )
             broadcastEarDetectionState()
-            stopHeartRateIfEarbudRemoved(leftInEar, rightInEar, "ble")
 
             // In BLE-only mode, ear detection is purely based on BLE data
             if (config.bleOnlyMode) {
@@ -1264,22 +1261,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         })
     }
 
-    fun passivelyStopHeartRateAfterEarRemoval(reason: String) {
-        if (::aacpManager.isInitialized) {
-            aacpManager.markHeartRateStreamingStoppedLocally()
-        }
-        broadcastHeartRateStateChanged(
-            enabled = false,
-            receiving = false,
-            reason = reason
-        )
-    }
-
-    private fun currentBothEarbudsInEar(): Boolean {
-        return earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
-            earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
-    }
-
     private fun currentAnyEarbudInEar(): Boolean {
         val aacpLeftInEar = earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte()
         val aacpRightInEar = earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
@@ -1352,46 +1333,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         aacpConnectInProgress = false
     }
 
-    private fun cancelHeartRateEarRemovalSafetyStop() {
-        heartRateEarRemovalStopRunnable?.let { heartRateEarRemovalHandler.removeCallbacks(it) }
-        heartRateEarRemovalStopRunnable = null
-    }
-
-    private fun stopHeartRateIfEarbudRemoved(leftInEar: Boolean, rightInEar: Boolean, source: String) {
-        if (leftInEar && rightInEar) {
-            cancelHeartRateEarRemovalSafetyStop()
-            return
-        }
-
-        cancelHeartRateEarRemovalSafetyStop()
-        if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) {
-            return
-        }
-
-        Log.d(
-            TAG,
-            "Passively stopping heart-rate stream because at least one earbud is out-of-ear ($source): left=$leftInEar right=$rightInEar"
-        )
-        // Do not send RTBuddy HR stop / HRM_STATE off here. When the removed bud is
-        // the current AirPods classic/AACP host, sending packets during the firmware
-        // role switch can keep the reconnect loop alive. Local state is cleared so
-        // late HR samples are ignored and the UI toggle is forced off.
-        aacpManager.markHeartRateStreamingStoppedLocally()
-        broadcastHeartRateStateChanged(
-            enabled = false,
-            receiving = false,
-            reason = "earbud_removed_passive_$source"
-        )
-    }
-
-    private fun scheduleHeartRateStopIfEarbudRemoved(newInEarData: List<Boolean>) {
-        stopHeartRateIfEarbudRemoved(
-            leftInEar = newInEarData.getOrElse(0) { false },
-            rightInEar = newInEarData.getOrElse(1) { false },
-            source = "aacp"
-        )
-    }
-
     private fun processEarDetectionChange(earDetection: ByteArray) {
         var inEar: Boolean
         val inEarData = listOf(
@@ -1408,7 +1349,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             data[0] == 0x00.toByte(), data[1] == 0x00.toByte()
         )
         earDetectionNotification.setStatus(earDetection)
-        scheduleHeartRateStopIfEarbudRemoved(newInEarData)
 
         if (config.earDetectionEnabled) {
             inEar = newInEarData == listOf(true, true)
