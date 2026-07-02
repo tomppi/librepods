@@ -708,7 +708,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    isConnectedLocally = false
                     popupShown = false
                     updateNotificationContent(false)
-                    cancelHeartRateEarRemovalSafetyStop()
                     cancelHeartRateAutoStartWhenSafe("airpods_disconnected")
                     if (::aacpManager.isInitialized) aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
