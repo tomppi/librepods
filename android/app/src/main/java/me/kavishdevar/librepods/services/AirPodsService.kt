@@ -320,6 +320,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         ) {
             Log.d(TAG, "Ear state changed - Left: $leftInEar, Right: $rightInEar")
 
+            // Keep the heart-rate screen in sync even when BLE reports in-ear changes
+            // before the AACP ear-detection notification arrives.
+            earDetectionNotification.status = listOf(
+                if (leftInEar) 0x00.toByte() else 0x01.toByte(),
+                if (rightInEar) 0x00.toByte() else 0x01.toByte()
+            )
+            broadcastEarDetectionState()
+            stopHeartRateIfEarbudRemoved(leftInEar, rightInEar, "ble")
+
             // In BLE-only mode, ear detection is purely based on BLE data
             if (config.bleOnlyMode) {
                 Log.d(TAG, "BLE-only mode: ear detection from BLE data")
@@ -698,7 +707,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    isConnectedLocally = false
                     popupShown = false
                     updateNotificationContent(false)
-                    aacpManager.disconnected()
+                    cancelHeartRateEarRemovalSafetyStop()
+                    if (::aacpManager.isInitialized) aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
                 }
@@ -1254,33 +1264,33 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         heartRateEarRemovalStopRunnable = null
     }
 
-    private fun scheduleHeartRateStopIfEarbudRemoved(newInEarData: List<Boolean>) {
-        if (newInEarData == listOf(true, true)) {
+    private fun stopHeartRateIfEarbudRemoved(leftInEar: Boolean, rightInEar: Boolean, source: String) {
+        if (leftInEar && rightInEar) {
             cancelHeartRateEarRemovalSafetyStop()
             return
         }
 
+        cancelHeartRateEarRemovalSafetyStop()
         if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
-        if (heartRateEarRemovalStopRunnable != null) return
 
-        val stopRunnable = Runnable {
-            heartRateEarRemovalStopRunnable = null
-            if (!::aacpManager.isInitialized) return@Runnable
+        Log.d(
+            TAG,
+            "Stopping heart-rate stream because at least one earbud is out-of-ear ($source): left=$leftInEar right=$rightInEar"
+        )
+        aacpManager.forceStopHeartRateStreaming()
+        broadcastHeartRateStateChanged(
+            enabled = false,
+            receiving = false,
+            reason = "earbud_removed_$source"
+        )
+    }
 
-            val stillBothInEar = earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
-                earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
-            if (!stillBothInEar && aacpManager.heartRateStreamingRequested) {
-                aacpManager.forceStopHeartRateStreaming()
-                broadcastHeartRateStateChanged(
-                    enabled = false,
-                    receiving = false,
-                    reason = "earbud_removed"
-                )
-            }
-        }
-
-        heartRateEarRemovalStopRunnable = stopRunnable
-        heartRateEarRemovalHandler.postDelayed(stopRunnable, 800L)
+    private fun scheduleHeartRateStopIfEarbudRemoved(newInEarData: List<Boolean>) {
+        stopHeartRateIfEarbudRemoved(
+            leftInEar = newInEarData.getOrElse(0) { false },
+            rightInEar = newInEarData.getOrElse(1) { false },
+            source = "aacp"
+        )
     }
 
     private fun processEarDetectionChange(earDetection: ByteArray) {

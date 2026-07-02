@@ -567,8 +567,15 @@ class AirPodsViewModel(
 
                     AirPodsNotifications.AIRPODS_DISCONNECTED -> {
                         _uiState.update {
-                            it.copy(isLocallyConnected = false)
+                            it.copy(
+                                isLocallyConnected = false,
+                                heartRateStreamingEnabled = false,
+                                heartRateReceiving = false,
+                                latestHeartRateBpm = null,
+                                latestHeartRateSampleMillis = null
+                            )
                         }
+                        viewModelScope.launch { flushPendingHeartRateSamplesToHealthConnect() }
                     }
 
                     AirPodsNotifications.BATTERY_DATA -> {

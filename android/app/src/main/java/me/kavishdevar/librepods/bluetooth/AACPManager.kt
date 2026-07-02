@@ -493,7 +493,10 @@ class AACPManager {
         }
 
         parseRtBuddyHeartRateSample(packet)?.let { sample ->
-            heartRateStreamingRequested = true
+            if (!heartRateStreamingRequested) {
+                Log.d(TAG, "Ignoring heart-rate sample because HR streaming is no longer requested")
+                return
+            }
             heartRateSampleCallback?.invoke(sample)
             callback?.onHeartRateSampleReceived(sample)
             return
@@ -1419,6 +1422,7 @@ class AACPManager {
         Log.d(TAG, "Disconnected, clearing state")
         controlCommandStatusList.clear()
         controlCommandListeners.clear()
+        heartRateStreamingRequested = false
         owns = false
         oldConnectedDevices = listOf()
         connectedDevices = listOf()
