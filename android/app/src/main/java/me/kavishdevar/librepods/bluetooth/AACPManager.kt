@@ -778,7 +778,7 @@ class AACPManager {
     fun sendHeartRateMonitorEnabled(enabled: Boolean): Boolean {
         return sendControlCommand(
             ControlCommandIdentifiers.HRM_STATE.value,
-            byteArrayOf((if (enabled) 0x01 else 0x00).toByte(), 0x00, 0x00, 0x00)
+            byteArrayOf((if (enabled) 0x01 else 0x02).toByte(), 0x00, 0x00, 0x00)
         )
     }
 

@@ -79,9 +79,11 @@ fun HeartRateRoute(viewModel: AirPodsViewModel) {
             receiving = state.heartRateReceiving,
             healthConnectSyncEnabled = state.heartRateHealthConnectSyncEnabled,
             healthConnectAvailable = state.heartRateHealthConnectAvailable,
+            autoStartWhenSafe = state.heartRateAutoStartWhenSafe,
             topPadding = topPadding,
             bottomPadding = bottomPadding,
             setEnabled = viewModel::setHeartRateStreamingEnabled,
+            setAutoStartWhenSafe = viewModel::setHeartRateAutoStartWhenSafe,
             setHealthConnectSyncEnabled = { enabled ->
                 if (enabled) {
                     if (state.heartRateHealthConnectAvailable) {
@@ -106,9 +108,11 @@ fun HeartRateScreen(
     receiving: Boolean,
     healthConnectSyncEnabled: Boolean,
     healthConnectAvailable: Boolean,
+    autoStartWhenSafe: Boolean,
     topPadding: Dp = 16.dp,
     bottomPadding: Dp = 16.dp,
     setEnabled: (Boolean) -> Unit,
+    setAutoStartWhenSafe: (Boolean) -> Unit,
     setHealthConnectSyncEnabled: (Boolean) -> Unit
 ) {
     val scrollState = rememberScrollState()
@@ -125,6 +129,12 @@ fun HeartRateScreen(
             label = "AirPods heart rate",
             checked = enabled,
             onCheckedChange = setEnabled
+        )
+
+        StyledToggle(
+            label = "Start when AirPods connect safely",
+            checked = autoStartWhenSafe,
+            onCheckedChange = setAutoStartWhenSafe
         )
 
         StyledToggle(
@@ -169,7 +179,9 @@ private fun HeartRateScreenPreview() {
                 receiving = true,
                 healthConnectSyncEnabled = demoState.heartRateHealthConnectSyncEnabled,
                 healthConnectAvailable = demoState.heartRateHealthConnectAvailable,
+                autoStartWhenSafe = demoState.heartRateAutoStartWhenSafe,
                 setEnabled = {},
+                setAutoStartWhenSafe = {},
                 setHealthConnectSyncEnabled = {},
                 bottomPadding = 16.dp
             )
