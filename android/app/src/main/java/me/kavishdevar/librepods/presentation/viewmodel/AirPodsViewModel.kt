@@ -96,6 +96,7 @@ data class AirPodsUiState(
     val latestHeartRateBpm: Int? = null,
     val latestHeartRateSampleMillis: Long? = null,
     val heartRateReceiving: Boolean = false,
+    val heartRateEarbudsInEar: Boolean = true,
     val heartRateSamples: List<HeartRatePoint> = emptyList(),
     val heartRateHealthConnectSyncEnabled: Boolean = false,
     val heartRateHealthConnectAvailable: Boolean = false,
@@ -182,6 +183,7 @@ val demoState = AirPodsUiState(
     heartRateHealthConnectAvailable = true,
     heartRateHealthConnectPermissionGranted = false,
     heartRateHealthConnectStatus = "Health Connect sync off",
+    heartRateEarbudsInEar = true,
 
     automaticEarDetectionEnabled = true,
     automaticConnectionEnabled = true,
@@ -319,11 +321,36 @@ class AirPodsViewModel(
             return
         }
 
-        val sent = service.aacpManager.setHeartRateStreaming(enabled)
+        if (!enabled) {
+            service.aacpManager.setHeartRateStreaming(false)
+            _uiState.update {
+                it.copy(
+                    heartRateStreamingEnabled = false,
+                    heartRateReceiving = false,
+                    latestHeartRateBpm = null,
+                    latestHeartRateSampleMillis = null
+                )
+            }
+            viewModelScope.launch { flushPendingHeartRateSamplesToHealthConnect() }
+            return
+        }
+
+        if (!_uiState.value.heartRateEarbudsInEar) {
+            _uiState.update {
+                it.copy(
+                    heartRateStreamingEnabled = false,
+                    heartRateReceiving = false,
+                    latestHeartRateBpm = null,
+                    latestHeartRateSampleMillis = null
+                )
+            }
+            return
+        }
+
+        val sent = service.aacpManager.setHeartRateStreaming(true)
         _uiState.update {
             it.copy(
-                heartRateStreamingEnabled = if (sent) enabled else it.heartRateStreamingEnabled,
-                heartRateReceiving = if (sent && !enabled) false else it.heartRateReceiving
+                heartRateStreamingEnabled = if (sent) true else it.heartRateStreamingEnabled
             )
         }
     }
@@ -333,10 +360,19 @@ class AirPodsViewModel(
         val receiving = latestSampleMillis != null &&
             System.currentTimeMillis() - latestSampleMillis <= HEART_RATE_RECEIVING_WINDOW_MS
         _uiState.update {
-            it.copy(
-                heartRateReceiving = receiving,
-                heartRateStreamingEnabled = if (receiving) true else it.heartRateStreamingEnabled
-            )
+            if (!it.heartRateEarbudsInEar) {
+                it.copy(
+                    heartRateReceiving = false,
+                    heartRateStreamingEnabled = false,
+                    latestHeartRateBpm = null,
+                    latestHeartRateSampleMillis = null
+                )
+            } else {
+                it.copy(
+                    heartRateReceiving = receiving,
+                    heartRateStreamingEnabled = if (receiving) true else it.heartRateStreamingEnabled
+                )
+            }
         }
     }
 
@@ -549,6 +585,40 @@ class AirPodsViewModel(
                         }
                     }
 
+                    AirPodsNotifications.EAR_DETECTION_DATA -> {
+                        val data = intent.getByteArrayExtra("data") ?: return
+                        val earbudsInEar = data.size >= 2 &&
+                            data[0] == 0x00.toByte() && data[1] == 0x00.toByte()
+                        _uiState.update {
+                            if (earbudsInEar) {
+                                it.copy(heartRateEarbudsInEar = true)
+                            } else {
+                                it.copy(
+                                    heartRateEarbudsInEar = false,
+                                    heartRateStreamingEnabled = false,
+                                    heartRateReceiving = false,
+                                    latestHeartRateBpm = null,
+                                    latestHeartRateSampleMillis = null
+                                )
+                            }
+                        }
+                    }
+
+                    AirPodsNotifications.HEART_RATE_STATE_CHANGED -> {
+                        val enabled = intent.getBooleanExtra("enabled", false)
+                        val receiving = intent.getBooleanExtra("receiving", false)
+                        if (!enabled) {
+                            handleHeartRateForcedOff()
+                        } else {
+                            _uiState.update {
+                                it.copy(
+                                    heartRateStreamingEnabled = enabled,
+                                    heartRateReceiving = receiving
+                                )
+                            }
+                        }
+                    }
+
                     AirPodsNotifications.AIRPODS_INFORMATION_UPDATED -> {
                         loadInstance()
                     }
@@ -561,12 +631,26 @@ class AirPodsViewModel(
             addAction(AirPodsNotifications.AIRPODS_DISCONNECTED)
             addAction(AirPodsNotifications.BATTERY_DATA)
             addAction(AirPodsNotifications.EQ_DATA)
+            addAction(AirPodsNotifications.EAR_DETECTION_DATA)
+            addAction(AirPodsNotifications.HEART_RATE_STATE_CHANGED)
             addAction(AirPodsNotifications.AIRPODS_INFORMATION_UPDATED)
         }
 
         appContext.registerReceiver(
             broadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED
         )
+    }
+
+    private fun handleHeartRateForcedOff() {
+        _uiState.update {
+            it.copy(
+                heartRateStreamingEnabled = false,
+                heartRateReceiving = false,
+                latestHeartRateBpm = null,
+                latestHeartRateSampleMillis = null
+            )
+        }
+        viewModelScope.launch { flushPendingHeartRateSamplesToHealthConnect() }
     }
 
     fun setControlCommandValue(
@@ -659,21 +743,26 @@ class AirPodsViewModel(
             _uiState.update { it.copy(customEq = customEq) }
         }
         service.aacpManager.heartRateSampleCallback = { sample ->
-            _uiState.update { state ->
-                state.copy(
-                    heartRateStreamingEnabled = true,
-                    heartRateReceiving = true,
-                    latestHeartRateBpm = sample.bpm,
-                    latestHeartRateSampleMillis = sample.timestampMillis
-                )
-            }
-
-            if (_uiState.value.heartRateHealthConnectSyncEnabled) {
-                synchronized(pendingHeartRateSamplesLock) {
-                    pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
-                        timestampMillis = sample.timestampMillis,
-                        bpm = sample.bpm
+            if (!_uiState.value.heartRateEarbudsInEar) {
+                service.aacpManager.forceStopHeartRateStreaming()
+                handleHeartRateForcedOff()
+            } else {
+                _uiState.update { state ->
+                    state.copy(
+                        heartRateStreamingEnabled = true,
+                        heartRateReceiving = true,
+                        latestHeartRateBpm = sample.bpm,
+                        latestHeartRateSampleMillis = sample.timestampMillis
                     )
+                }
+
+                if (_uiState.value.heartRateHealthConnectSyncEnabled) {
+                    synchronized(pendingHeartRateSamplesLock) {
+                        pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
+                            timestampMillis = sample.timestampMillis,
+                            bpm = sample.bpm
+                        )
+                    }
                 }
             }
         }

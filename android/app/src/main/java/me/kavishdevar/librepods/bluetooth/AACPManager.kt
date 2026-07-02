@@ -258,6 +258,10 @@ class AACPManager {
 
     var heartRateSampleCallback: ((HeartRateSample) -> Unit)? = null
 
+    @Volatile
+    var heartRateStreamingRequested: Boolean = false
+        private set
+
     interface PacketCallback {
         fun onBatteryInfoReceived(batteryInfo: ByteArray)
         fun onEarDetectionReceived(earDetection: ByteArray)
@@ -489,10 +493,7 @@ class AACPManager {
         }
 
         parseRtBuddyHeartRateSample(packet)?.let { sample ->
-            Log.d(
-                TAG,
-                "RTBuddy HEARTRATE sample bpm=${sample.bpm} tail=${sample.statusTail.joinToString(" ") { "%02X".format(it) }}"
-            )
+            heartRateStreamingRequested = true
             heartRateSampleCallback?.invoke(sample)
             callback?.onHeartRateSampleReceived(sample)
             return
@@ -745,12 +746,19 @@ class AACPManager {
         return if (enabled) {
             val controlOk = sendHeartRateMonitorEnabled(true)
             val startOk = sendStartHeartRate()
-            controlOk && startOk
+            val ok = controlOk && startOk
+            if (ok) heartRateStreamingRequested = true
+            ok
         } else {
-            val stopOk = sendStopHeartRate()
-            val controlOk = sendHeartRateMonitorEnabled(false)
-            stopOk && controlOk
+            forceStopHeartRateStreaming()
         }
+    }
+
+    fun forceStopHeartRateStreaming(): Boolean {
+        val stopOk = sendStopHeartRate()
+        val controlOk = sendHeartRateMonitorEnabled(false)
+        heartRateStreamingRequested = false
+        return stopOk && controlOk
     }
 
     fun sendHeartRateMonitorEnabled(enabled: Boolean): Boolean {
