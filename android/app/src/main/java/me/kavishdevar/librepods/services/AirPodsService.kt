@@ -162,6 +162,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var otherDeviceTookOver = false
     private val heartRateEarRemovalHandler = Handler(Looper.getMainLooper())
     private var heartRateEarRemovalStopRunnable: Runnable? = null
+    private val heartRateAacpQuarantineHandler = Handler(Looper.getMainLooper())
+    private var heartRateAacpQuarantineActive = false
+    private var heartRateAacpQuarantineUntilMs = 0L
+    private var heartRateAacpQuarantineReleaseRunnable: Runnable? = null
+    private var heartRateAacpQuarantineExpiryRunnable: Runnable? = null
+    private var aacpConnectInProgress = false
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -1259,6 +1265,124 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         })
     }
 
+    private fun currentBothEarbudsInEar(): Boolean {
+        return earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
+            earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
+    }
+
+    @Synchronized
+    private fun clearHeartRateAacpQuarantine(reason: String) {
+        if (!heartRateAacpQuarantineActive) return
+        heartRateAacpQuarantineReleaseRunnable?.let {
+            heartRateAacpQuarantineHandler.removeCallbacks(it)
+        }
+        heartRateAacpQuarantineExpiryRunnable?.let {
+            heartRateAacpQuarantineHandler.removeCallbacks(it)
+        }
+        heartRateAacpQuarantineReleaseRunnable = null
+        heartRateAacpQuarantineExpiryRunnable = null
+        heartRateAacpQuarantineActive = false
+        heartRateAacpQuarantineUntilMs = 0L
+        Log.d(TAG, "HR AACP quarantine cleared: $reason")
+    }
+
+    @Synchronized
+    fun isHeartRateAacpQuarantineActive(): Boolean {
+        if (!heartRateAacpQuarantineActive) return false
+
+        val now = System.currentTimeMillis()
+        if (now >= heartRateAacpQuarantineUntilMs) {
+            clearHeartRateAacpQuarantine("safety timeout reached")
+            return false
+        }
+
+        return true
+    }
+
+    @Synchronized
+    private fun startHeartRateAacpQuarantine(reason: String) {
+        val now = System.currentTimeMillis()
+        val newUntil = now + 30_000L
+        heartRateAacpQuarantineActive = true
+        heartRateAacpQuarantineUntilMs = maxOf(heartRateAacpQuarantineUntilMs, newUntil)
+
+        heartRateAacpQuarantineExpiryRunnable?.let {
+            heartRateAacpQuarantineHandler.removeCallbacks(it)
+        }
+        val expireRunnable = Runnable {
+            if (System.currentTimeMillis() >= heartRateAacpQuarantineUntilMs) {
+                clearHeartRateAacpQuarantine("safety timeout reached")
+            }
+        }
+        heartRateAacpQuarantineExpiryRunnable = expireRunnable
+        heartRateAacpQuarantineHandler.postDelayed(
+            expireRunnable,
+            (heartRateAacpQuarantineUntilMs - now).coerceAtLeast(1L)
+        )
+
+        heartRateAacpQuarantineReleaseRunnable?.let {
+            heartRateAacpQuarantineHandler.removeCallbacks(it)
+        }
+        heartRateAacpQuarantineReleaseRunnable = null
+
+        Log.d(
+            TAG,
+            "HR AACP quarantine active for automatic reconnects: reason=$reason, maxRemainingMs=${heartRateAacpQuarantineUntilMs - now}"
+        )
+    }
+
+    @Synchronized
+    private fun scheduleHeartRateAacpQuarantineReleaseIfStable(leftInEar: Boolean, rightInEar: Boolean, source: String) {
+        if (!heartRateAacpQuarantineActive) return
+
+        if (!leftInEar || !rightInEar) {
+            heartRateAacpQuarantineReleaseRunnable?.let {
+                heartRateAacpQuarantineHandler.removeCallbacks(it)
+            }
+            heartRateAacpQuarantineReleaseRunnable = null
+            Log.d(TAG, "HR AACP quarantine remains active: earbuds not both in-ear from $source")
+            return
+        }
+
+        heartRateAacpQuarantineReleaseRunnable?.let {
+            heartRateAacpQuarantineHandler.removeCallbacks(it)
+        }
+        val releaseRunnable = Runnable {
+            if (currentBothEarbudsInEar()) {
+                clearHeartRateAacpQuarantine("both earbuds stable in-ear from $source")
+            } else {
+                Log.d(TAG, "HR AACP quarantine release cancelled: earbuds no longer both in-ear")
+            }
+        }
+        heartRateAacpQuarantineReleaseRunnable = releaseRunnable
+        heartRateAacpQuarantineHandler.postDelayed(releaseRunnable, 5_000L)
+        Log.d(TAG, "HR AACP quarantine release scheduled after stable both-in-ear state from $source")
+    }
+
+    private fun shouldBlockAutomaticAacpConnect(reason: String, manual: Boolean): Boolean {
+        if (manual) return false
+        if (!isHeartRateAacpQuarantineActive()) return false
+
+        val remaining = (heartRateAacpQuarantineUntilMs - System.currentTimeMillis()).coerceAtLeast(0L)
+        Log.d(
+            TAG,
+            "Skipping automatic AACP socket connect during HR quarantine: trigger=$reason, remainingMs=$remaining"
+        )
+        return true
+    }
+
+    @Synchronized
+    private fun markAacpConnectInProgressIfIdle(): Boolean {
+        if (aacpConnectInProgress) return false
+        aacpConnectInProgress = true
+        return true
+    }
+
+    @Synchronized
+    private fun clearAacpConnectInProgress() {
+        aacpConnectInProgress = false
+    }
+
     private fun cancelHeartRateEarRemovalSafetyStop() {
         heartRateEarRemovalStopRunnable?.let { heartRateEarRemovalHandler.removeCallbacks(it) }
         heartRateEarRemovalStopRunnable = null
@@ -1267,16 +1391,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun stopHeartRateIfEarbudRemoved(leftInEar: Boolean, rightInEar: Boolean, source: String) {
         if (leftInEar && rightInEar) {
             cancelHeartRateEarRemovalSafetyStop()
+            scheduleHeartRateAacpQuarantineReleaseIfStable(leftInEar, rightInEar, source)
             return
         }
 
         cancelHeartRateEarRemovalSafetyStop()
-        if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) return
+        if (!::aacpManager.isInitialized || !aacpManager.heartRateStreamingRequested) {
+            scheduleHeartRateAacpQuarantineReleaseIfStable(leftInEar, rightInEar, source)
+            return
+        }
 
         Log.d(
             TAG,
             "Stopping heart-rate stream because at least one earbud is out-of-ear ($source): left=$leftInEar right=$rightInEar"
         )
+        startHeartRateAacpQuarantine("hr_earbud_removed_$source")
         aacpManager.forceStopHeartRateStreaming()
         broadcastHeartRateStateChanged(
             enabled = false,
@@ -1333,11 +1462,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             if (newInEarData.contains(true) && inEarData == listOf(false, false)) {
-                connectAudio(this@AirPodsService, device)
-                justEnabledA2dp = true
-                registerA2dpConnectionReceiver()
-                if (MediaController.getMusicActive()) {
-                    MediaController.userPlayedTheMedia = true
+                if (isHeartRateAacpQuarantineActive()) {
+                    Log.d(TAG, "Skipping immediate connectAudio on earbud reinsertion during HR AACP quarantine")
+                } else {
+                    connectAudio(this@AirPodsService, device)
+                    justEnabledA2dp = true
+                    registerA2dpConnectionReceiver()
+                    if (MediaController.getMusicActive()) {
+                        MediaController.userPlayedTheMedia = true
+                    }
                 }
             } else if (newInEarData == listOf(false, false)) {
                 MediaController.sendPause(force = true)
@@ -2524,6 +2657,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false
     ) {
+        if (isHeartRateAacpQuarantineActive()) {
+            Log.d(TAG, "Skipping takeOver($takingOverFor) during HR AACP quarantine")
+            return
+        }
+
         if (takingOverFor == "reverse") {
             aacpManager.sendControlCommand(
                 AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
@@ -2705,7 +2843,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun connectToSocket(
         adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean = false
     ) {
+        if (shouldBlockAutomaticAacpConnect("connectToSocket", manual)) return
         if (BluetoothConnectionManager.aacpSocket != null && BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+        if (!markAacpConnectInProgressIfIdle()) {
+            Log.d(TAG, "Skipping AACP socket connect because another connect is already in progress")
+            return
+        }
+        try {
         Log.d(TAG, "<LogCollector:Start> Connecting to socket")
         val uuid: ParcelUuid = ParcelUuid.fromString("74ec2172-0bad-4d01-8f77-997b2be0722a")
 //        if (!isConnectedLocally) {
@@ -2907,6 +3051,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //        } else {
 //            Log.d(TAG, "Already connected locally, skipping BluetoothConnectionManager.aacpSocket? connection (isConnectedLocally = $isConnectedLocally, BluetoothConnectionManager.aacpSocket?.isConnected = ${this::BluetoothConnectionManager.aacpSocket?.isInitialized && BluetoothConnectionManager.aacpSocket?.isConnected})")
 //        }
+        } finally {
+            clearAacpConnectInProgress()
+        }
     }
 
     fun disconnectForCD() {
@@ -3215,6 +3362,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var isHeadTrackingActive = false
 
     fun startHeadTracking() {
+        if (isHeartRateAacpQuarantineActive()) {
+            Log.d(TAG, "Skipping startHeadTracking during HR AACP quarantine")
+            return
+        }
         isHeadTrackingActive = true
         val useAlternatePackets =
             sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true)
