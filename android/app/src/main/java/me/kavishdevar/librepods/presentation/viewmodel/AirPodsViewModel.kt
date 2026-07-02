@@ -751,7 +751,7 @@ class AirPodsViewModel(
         }
         service.aacpManager.heartRateSampleCallback = { sample ->
             if (!_uiState.value.heartRateEarbudsInEar) {
-                service.aacpManager.forceStopHeartRateStreaming()
+                service.passivelyStopHeartRateAfterEarRemoval("late_hr_sample_out_of_ear_passive")
                 handleHeartRateForcedOff()
             } else {
                 _uiState.update { state ->

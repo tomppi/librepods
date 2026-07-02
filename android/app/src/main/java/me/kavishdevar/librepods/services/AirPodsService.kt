@@ -1265,6 +1265,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         })
     }
 
+    fun passivelyStopHeartRateAfterEarRemoval(reason: String) {
+        if (::aacpManager.isInitialized) {
+            startHeartRateAacpQuarantine(reason)
+            aacpManager.markHeartRateStreamingStoppedLocally()
+        }
+        broadcastHeartRateStateChanged(
+            enabled = false,
+            receiving = false,
+            reason = reason
+        )
+    }
+
     private fun currentBothEarbudsInEar(): Boolean {
         return earDetectionNotification.status.getOrElse(0) { 0x01.toByte() } == 0x00.toByte() &&
             earDetectionNotification.status.getOrElse(1) { 0x01.toByte() } == 0x00.toByte()
@@ -1403,14 +1415,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         Log.d(
             TAG,
-            "Stopping heart-rate stream because at least one earbud is out-of-ear ($source): left=$leftInEar right=$rightInEar"
+            "Passively stopping heart-rate stream because at least one earbud is out-of-ear ($source): left=$leftInEar right=$rightInEar"
         )
         startHeartRateAacpQuarantine("hr_earbud_removed_$source")
-        aacpManager.forceStopHeartRateStreaming()
+        // Do not send RTBuddy HR stop / HRM_STATE off here. When the removed bud is
+        // the current AirPods classic/AACP host, sending packets during the firmware
+        // role switch can keep the reconnect loop alive. Local state is cleared so
+        // late HR samples are ignored and the UI toggle is forced off.
+        aacpManager.markHeartRateStreamingStoppedLocally()
         broadcastHeartRateStateChanged(
             enabled = false,
             receiving = false,
-            reason = "earbud_removed_$source"
+            reason = "earbud_removed_passive_$source"
         )
     }
 
