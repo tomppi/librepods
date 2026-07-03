@@ -163,6 +163,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val heartRateAutoStartHandler = Handler(Looper.getMainLooper())
     private var heartRateAutoStartRunnable: Runnable? = null
     private var aacpConnectInProgress = false
+    private var lastRequestedHostBudRole: Byte? = null
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -176,6 +177,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         var qsClickBehavior: String = "cycle",
         var bleOnlyMode: Boolean = false,
         var heartRateAutoStartWhenSafe: Boolean = false,
+        var heartRateHostRemainingBud: Boolean = false,
 
         // AirPods state-based takeover
         var takeoverWhenDisconnected: Boolean = true,
@@ -1316,8 +1318,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
         }
         heartRateAutoStartRunnable = runnable
-        heartRateAutoStartHandler.postDelayed(runnable, 3_000L)
-        Log.d(TAG, "HR auto-start when safe scheduled in 3000ms: reason=$reason")
+        heartRateAutoStartHandler.postDelayed(runnable, 10_000L)
+        Log.d(TAG, "HR auto-start when safe scheduled in 10000ms: reason=$reason")
     }
 
     @Synchronized
@@ -1348,6 +1350,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             data[0] == 0x00.toByte(), data[1] == 0x00.toByte()
         )
         earDetectionNotification.setStatus(earDetection)
+        requestRemainingBudAsHostFromEarState(inEarData, newInEarData)
 
         if (config.earDetectionEnabled) {
             inEar = newInEarData == listOf(true, true)
@@ -1420,6 +1423,35 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    private fun requestRemainingBudAsHostFromEarState(previous: List<Boolean>, current: List<Boolean>) {
+        if (!config.heartRateHostRemainingBud) return
+        if (previous == current) return
+        if (current.size < 2 || current.count { it } != 1) {
+            if (current.count { it } != 1) {
+                lastRequestedHostBudRole = null
+            }
+            return
+        }
+
+        val leftInEar = current[0]
+        val rightInEar = current[1]
+        val requestedRole = if (leftInEar && !rightInEar) 0x01.toByte() else 0x02.toByte()
+        if (lastRequestedHostBudRole == requestedRole) {
+            Log.d(
+                TAG,
+                "HOST-BUD-ROLE skip duplicate remaining-bud host request role=${if (requestedRole == 0x01.toByte()) "left" else "right"}"
+            )
+            return
+        }
+
+        val started = aacpManager.requestPrimaryHostBud(leftPrimary = requestedRole == 0x01.toByte())
+        lastRequestedHostBudRole = if (started) requestedRole else null
+        Log.d(
+            TAG,
+            "HOST-BUD-ROLE remaining bud requested as host: leftInEar=$leftInEar rightInEar=$rightInEar requested=${if (requestedRole == 0x01.toByte()) "left_primary" else "right_primary"} sent=$started"
+        )
+    }
+
     private fun registerA2dpConnectionReceiver() {
         val a2dpConnectionStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -1481,6 +1513,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             ),
             qsClickBehavior = sharedPreferences.getString("qs_click_behavior", "cycle") ?: "cycle",
             heartRateAutoStartWhenSafe = sharedPreferences.getBoolean("heart_rate_auto_start_when_safe", false),
+            heartRateHostRemainingBud = sharedPreferences.getBoolean("heart_rate_host_remaining_bud", false),
 
             // AirPods state-based takeover
             takeoverWhenDisconnected = sharedPreferences.getBoolean(
@@ -1603,6 +1636,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 config.heartRateAutoStartWhenSafe = preferences.getBoolean(key, false)
                 if (!config.heartRateAutoStartWhenSafe) {
                     cancelHeartRateAutoStartWhenSafe("preference_disabled")
+                }
+            }
+
+            "heart_rate_host_remaining_bud" -> {
+                config.heartRateHostRemainingBud = preferences.getBoolean(key, false)
+                if (!config.heartRateHostRemainingBud) {
+                    lastRequestedHostBudRole = null
                 }
             }
 

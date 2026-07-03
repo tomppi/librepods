@@ -103,6 +103,7 @@ data class AirPodsUiState(
     val heartRateHealthConnectPermissionGranted: Boolean = false,
     val heartRateHealthConnectStatus: String = "Health Connect not checked yet",
     val heartRateAutoStartWhenSafe: Boolean = false,
+    val heartRateHostRemainingBud: Boolean = false,
 
     val eqData: FloatArray = floatArrayOf(),
 
@@ -368,6 +369,17 @@ class AirPodsViewModel(
         }
     }
 
+    fun setHeartRateHostRemainingBud(enabled: Boolean) {
+        if (!isDemoMode) {
+            sharedPreferences.edit {
+                putBoolean("heart_rate_host_remaining_bud", enabled)
+            }
+        }
+        _uiState.update {
+            it.copy(heartRateHostRemainingBud = enabled)
+        }
+    }
+
     fun refreshHeartRateRuntimeState() {
         val latestSampleMillis = _uiState.value.latestHeartRateSampleMillis
         val receiving = latestSampleMillis != null &&
@@ -552,7 +564,8 @@ class AirPodsViewModel(
                 "off_listening_mode", "automatic_ear_detection", "automatic_connection_ctrl_cmd",
                 "head_gestures", "left_long_press_action", "right_long_press_action",
                 "dynamic_end_of_charge", "foss_upgraded", "premium_expiry_time",
-                "heart_rate_health_connect_sync", "heart_rate_auto_start_when_safe" -> loadSharedPreferences()
+                "heart_rate_health_connect_sync", "heart_rate_auto_start_when_safe",
+                "heart_rate_host_remaining_bud" -> loadSharedPreferences()
             }
         }
         sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
@@ -801,6 +814,7 @@ class AirPodsViewModel(
         val dynamicEndOfCharge = sharedPreferences.getBoolean("dynamic_end_of_charge", false)
         val heartRateHealthConnectSyncEnabled = sharedPreferences.getBoolean("heart_rate_health_connect_sync", false)
         val heartRateAutoStartWhenSafe = sharedPreferences.getBoolean("heart_rate_auto_start_when_safe", false)
+        val heartRateHostRemainingBud = sharedPreferences.getBoolean("heart_rate_host_remaining_bud", false)
 
         val connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false)
 
@@ -816,6 +830,7 @@ class AirPodsViewModel(
                 dynamicEndOfCharge = dynamicEndOfCharge,
                 heartRateHealthConnectSyncEnabled = heartRateHealthConnectSyncEnabled,
                 heartRateAutoStartWhenSafe = heartRateAutoStartWhenSafe,
+                heartRateHostRemainingBud = heartRateHostRemainingBud,
                 connectionSuccessful = connectionSuccessful,
             )
         }

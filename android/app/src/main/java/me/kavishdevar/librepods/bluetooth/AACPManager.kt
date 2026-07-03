@@ -41,6 +41,7 @@ class AACPManager {
             const val REQUEST_NOTIFICATIONS: Byte = 0x0F
             const val BATTERY_INFO: Byte = 0x04
             const val CONTROL_COMMAND: Byte = 0x09
+            const val BUD_ROLE: Byte = 0x08
             const val EAR_DETECTION: Byte = 0x06
             const val CONVERSATION_AWARENESS: Byte = 0x4B
             const val INFORMATION: Byte = 0x1D
@@ -86,7 +87,7 @@ class AACPManager {
 
         //        @Suppress("unused")
         enum class ControlCommandIdentifiers(val value: Byte) {
-            MIC_MODE(0x01), BUTTON_SEND_MODE(0x05), VOICE_TRIGGER(0x12), SINGLE_CLICK_MODE(0x14), DOUBLE_CLICK_MODE(
+            MIC_MODE(0x01), BUD_ROLE(0x08), BUTTON_SEND_MODE(0x05), VOICE_TRIGGER(0x12), SINGLE_CLICK_MODE(0x14), DOUBLE_CLICK_MODE(
                 0x15
             ),
             CLICK_HOLD_MODE(0x16), DOUBLE_CLICK_INTERVAL(0x17), CLICK_HOLD_INTERVAL(0x18), LISTENING_MODE_CONFIGS(
@@ -562,6 +563,20 @@ class AACPManager {
                 callback?.onControlCommandReceived(packet)
             }
 
+            Opcodes.BUD_ROLE -> {
+                val role = packet.getOrNull(6)?.toInt()?.and(0xFF)
+                val roleName = when (role) {
+                    0x01 -> "left_primary"
+                    0x02 -> "right_primary"
+                    else -> "unknown"
+                }
+                Log.d(
+                    TAG,
+                    "HOST-BUD-ROLE RX raw=${packet.joinToString(" ") { "%02X".format(it) }} role=$roleName"
+                )
+                callback?.onUnknownPacketReceived(packet)
+            }
+
             Opcodes.EAR_DETECTION -> {
                 callback?.onEarDetectionReceived(packet)
             }
@@ -769,6 +784,18 @@ class AACPManager {
         return sendControlCommand(
             ControlCommandIdentifiers.HRM_STATE.value,
             byteArrayOf((if (enabled) 0x01 else 0x02).toByte(), 0x00, 0x00, 0x00)
+        )
+    }
+
+    fun requestPrimaryHostBud(leftPrimary: Boolean): Boolean {
+        val roleValue = if (leftPrimary) 0x01 else 0x02
+        Log.d(
+            TAG,
+            "HOST-BUD-ROLE TX request primary=${if (leftPrimary) "left" else "right"} value=%02X 00 00 00".format(roleValue)
+        )
+        return sendControlCommand(
+            ControlCommandIdentifiers.BUD_ROLE.value,
+            byteArrayOf(roleValue.toByte(), 0x00, 0x00, 0x00)
         )
     }
 

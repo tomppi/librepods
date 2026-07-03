@@ -80,10 +80,12 @@ fun HeartRateRoute(viewModel: AirPodsViewModel) {
             healthConnectSyncEnabled = state.heartRateHealthConnectSyncEnabled,
             healthConnectAvailable = state.heartRateHealthConnectAvailable,
             autoStartWhenSafe = state.heartRateAutoStartWhenSafe,
+            hostRemainingBud = state.heartRateHostRemainingBud,
             topPadding = topPadding,
             bottomPadding = bottomPadding,
             setEnabled = viewModel::setHeartRateStreamingEnabled,
             setAutoStartWhenSafe = viewModel::setHeartRateAutoStartWhenSafe,
+            setHostRemainingBud = viewModel::setHeartRateHostRemainingBud,
             setHealthConnectSyncEnabled = { enabled ->
                 if (enabled) {
                     if (state.heartRateHealthConnectAvailable) {
@@ -109,10 +111,12 @@ fun HeartRateScreen(
     healthConnectSyncEnabled: Boolean,
     healthConnectAvailable: Boolean,
     autoStartWhenSafe: Boolean,
+    hostRemainingBud: Boolean,
     topPadding: Dp = 16.dp,
     bottomPadding: Dp = 16.dp,
     setEnabled: (Boolean) -> Unit,
     setAutoStartWhenSafe: (Boolean) -> Unit,
+    setHostRemainingBud: (Boolean) -> Unit,
     setHealthConnectSyncEnabled: (Boolean) -> Unit
 ) {
     val scrollState = rememberScrollState()
@@ -135,6 +139,12 @@ fun HeartRateScreen(
             label = "Start when AirPods connect safely",
             checked = autoStartWhenSafe,
             onCheckedChange = setAutoStartWhenSafe
+        )
+
+        StyledToggle(
+            label = "Make remaining earbud host",
+            checked = hostRemainingBud,
+            onCheckedChange = setHostRemainingBud
         )
 
         StyledToggle(
@@ -180,8 +190,10 @@ private fun HeartRateScreenPreview() {
                 healthConnectSyncEnabled = demoState.heartRateHealthConnectSyncEnabled,
                 healthConnectAvailable = demoState.heartRateHealthConnectAvailable,
                 autoStartWhenSafe = demoState.heartRateAutoStartWhenSafe,
+                hostRemainingBud = demoState.heartRateHostRemainingBud,
                 setEnabled = {},
                 setAutoStartWhenSafe = {},
+                setHostRemainingBud = {},
                 setHealthConnectSyncEnabled = {},
                 bottomPadding = 16.dp
             )

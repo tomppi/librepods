@@ -6,7 +6,7 @@ Changes:
 
 - Adds a Heart Rate screen toggle: `Start when AirPods connect safely`.
 - Saves the toggle in SharedPreferences as `heart_rate_auto_start_when_safe`.
-- When enabled, the service schedules heart-rate streaming 3 seconds after the AACP socket has connected and the normal startup handshake/stem setup has run.
+- When enabled, the service schedules heart-rate streaming 10 seconds after the AACP socket has connected and the normal startup handshake/stem setup has run.
 - Auto-start only runs if:
   - the setting is still enabled,
   - AACP is still connected,
@@ -22,7 +22,7 @@ Changes:
 
 Log markers:
 
-- `HR auto-start when safe scheduled in 3000ms`
+- `HR auto-start when safe scheduled in 10000ms`
 - `HR auto-start when safe: starting heart-rate streaming after safe connection`
 - `HR auto-start skipped because ...`
 - `HR auto-start cancelled: ...`
