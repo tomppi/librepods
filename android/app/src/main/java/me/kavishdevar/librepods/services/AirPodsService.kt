@@ -135,8 +135,8 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration.Companion.milliseconds
 
 private const val TAG = "AirPodsService"
-private const val HEART_RATE_ROLE_SWAP_RECOVERY_DELAY_MS = 1_500L
-private const val HEART_RATE_ROLE_SWAP_RESTART_GAP_MS = 500L
+private const val HEART_RATE_RECONNECT_RECOVERY_DELAY_MS = 1_500L
+private const val HEART_RATE_RECONNECT_RESTART_GAP_MS = 500L
 
 object ServiceManager {
     private var service: AirPodsService? = null
@@ -164,8 +164,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var otherDeviceTookOver = false
     private val heartRateAutoStartHandler = Handler(Looper.getMainLooper())
     private var heartRateAutoStartRunnable: Runnable? = null
-    private val heartRateRoleRecoveryHandler = Handler(Looper.getMainLooper())
-    private var heartRateRoleRecoveryRunnable: Runnable? = null
+    private val heartRateReconnectRecoveryHandler = Handler(Looper.getMainLooper())
+    private var heartRateReconnectRecoveryRunnable: Runnable? = null
+    private var pendingHeartRateReconnectRecovery = false
+    private var pendingHeartRateReconnectRecoveryReason: String? = null
+    private var roleSwapObservedWhileHeartRateRequested = false
     private var currentPrimaryBudRole: Int? = null
     private var aacpConnectInProgress = false
 
@@ -713,8 +716,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    isConnectedLocally = false
                     popupShown = false
                     updateNotificationContent(false)
+                    maybeArmHeartRateReconnectRecoveryBeforeDisconnect("airpods_disconnected")
                     cancelHeartRateAutoStartWhenSafe("airpods_disconnected")
-                    cancelHeartRateRoleSwapRecovery("airpods_disconnected")
+                    cancelHeartRateReconnectRecovery("airpods_disconnected")
                     currentPrimaryBudRole = null
                     if (::aacpManager.isInitialized) aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
@@ -1297,13 +1301,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun handleBudRoleReceived(role: Int?, packet: ByteArray) {
         val previousRole = currentPrimaryBudRole
         currentPrimaryBudRole = role
+        val hrRequested = if (::aacpManager.isInitialized) aacpManager.heartRateStreamingRequested else false
         Log.d(
             TAG,
-            "HR-ROLE-STATE bud_role previous=${budRoleName(previousRole)} current=${budRoleName(role)} hrRequested=${if (::aacpManager.isInitialized) aacpManager.heartRateStreamingRequested else false} raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+            "HR-ROLE-STATE bud_role previous=${budRoleName(previousRole)} current=${budRoleName(role)} hrRequested=$hrRequested pendingReconnectRecovery=$pendingHeartRateReconnectRecovery raw=${packet.joinToString(" ") { "%02X".format(it) }}"
         )
 
         if (role != null && previousRole != null && previousRole != role) {
-            scheduleHeartRateRoleSwapRecovery("bud_role_${budRoleName(previousRole)}_to_${budRoleName(role)}")
+            armHeartRateReconnectRecoveryFromRoleEvent("bud_role_${budRoleName(previousRole)}_to_${budRoleName(role)}")
         }
     }
 
@@ -1316,83 +1321,127 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             0x4A -> "swap_complete_confirm"
             else -> "unknown_swap_$opcodeValue"
         }
+        val hrRequested = if (::aacpManager.isInitialized) aacpManager.heartRateStreamingRequested else false
         Log.d(
             TAG,
-            "HR-ROLE-STATE bud_swap_event name=$name opcode=%02X currentRole=${budRoleName(currentPrimaryBudRole)} hrRequested=${if (::aacpManager.isInitialized) aacpManager.heartRateStreamingRequested else false} raw=${packet.joinToString(" ") { "%02X".format(it) }}".format(opcodeValue)
+            "HR-ROLE-STATE bud_swap_event name=$name opcode=%02X currentRole=${budRoleName(currentPrimaryBudRole)} hrRequested=$hrRequested pendingReconnectRecovery=$pendingHeartRateReconnectRecovery raw=${packet.joinToString(" ") { "%02X".format(it) }}".format(opcodeValue)
         )
-        scheduleHeartRateRoleSwapRecovery(name)
+        armHeartRateReconnectRecoveryFromRoleEvent(name)
     }
 
-    private fun cancelHeartRateRoleSwapRecovery(reason: String) {
-        heartRateRoleRecoveryRunnable?.let { heartRateRoleRecoveryHandler.removeCallbacks(it) }
-        heartRateRoleRecoveryRunnable = null
-        Log.d(TAG, "HR-ROLE-RECOVERY cancelled: $reason")
+    private fun armHeartRateReconnectRecovery(reason: String) {
+        pendingHeartRateReconnectRecovery = true
+        pendingHeartRateReconnectRecoveryReason = reason
+        Log.d(TAG, "HR-RECONNECT-RECOVERY armed: reason=$reason")
+        broadcastHeartRateStateChanged(enabled = true, receiving = false, reason = "hr_reconnect_recovery_armed")
     }
 
-    private fun scheduleHeartRateRoleSwapRecovery(reason: String) {
+    private fun armHeartRateReconnectRecoveryFromRoleEvent(reason: String) {
         if (!::aacpManager.isInitialized) {
-            Log.d(TAG, "HR-ROLE-RECOVERY skipped because AACP manager is not ready: reason=$reason")
+            Log.d(TAG, "HR-RECONNECT-RECOVERY not armed because AACP manager is not ready: reason=$reason")
             return
         }
         if (!aacpManager.heartRateStreamingRequested) {
-            Log.d(TAG, "HR-ROLE-RECOVERY skipped because HR is not requested: reason=$reason")
+            Log.d(TAG, "HR-RECONNECT-RECOVERY not armed because HR is not requested: reason=$reason")
             return
         }
         if (!currentAnyEarbudInEar()) {
-            Log.d(TAG, "HR-ROLE-RECOVERY skipped because both earbuds are out-of-ear: reason=$reason")
+            Log.d(TAG, "HR-RECONNECT-RECOVERY not armed because both earbuds are out-of-ear: reason=$reason")
             return
         }
 
-        cancelHeartRateRoleSwapRecovery("reschedule_$reason")
+        roleSwapObservedWhileHeartRateRequested = true
+        armHeartRateReconnectRecovery("role_event_$reason")
+        Log.d(TAG, "HR-ROLE-RECOVERY passive mode: waiting for AACP reconnect instead of immediate stop/start, reason=$reason")
+    }
+
+    private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect(reason: String) {
+        val wasHrRequested = ::aacpManager.isInitialized && aacpManager.heartRateStreamingRequested
+        if (wasHrRequested || roleSwapObservedWhileHeartRateRequested || pendingHeartRateReconnectRecovery) {
+            val pendingReason = pendingHeartRateReconnectRecoveryReason
+            armHeartRateReconnectRecovery(
+                "disconnect_$reason wasHrRequested=$wasHrRequested roleSwapObserved=$roleSwapObservedWhileHeartRateRequested previous=$pendingReason"
+            )
+        } else {
+            Log.d(TAG, "HR-RECONNECT-RECOVERY not armed before disconnect: reason=$reason wasHrRequested=false roleSwapObserved=false")
+        }
+    }
+
+    private fun cancelHeartRateReconnectRecovery(reason: String, clearPending: Boolean = false) {
+        heartRateReconnectRecoveryRunnable?.let { heartRateReconnectRecoveryHandler.removeCallbacks(it) }
+        heartRateReconnectRecoveryRunnable = null
+        if (clearPending) {
+            pendingHeartRateReconnectRecovery = false
+            pendingHeartRateReconnectRecoveryReason = null
+            roleSwapObservedWhileHeartRateRequested = false
+        }
+        Log.d(TAG, "HR-RECONNECT-RECOVERY cancelled: $reason clearPending=$clearPending")
+    }
+
+    private fun schedulePendingHeartRateReconnectRecovery(reason: String): Boolean {
+        if (!pendingHeartRateReconnectRecovery) {
+            Log.d(TAG, "HR-RECONNECT-RECOVERY not scheduled because no pending recovery: reason=$reason")
+            return false
+        }
+
+        cancelHeartRateAutoStartWhenSafe("reconnect_recovery_pending_$reason")
+        cancelHeartRateReconnectRecovery("reschedule_$reason")
+        val originalReason = pendingHeartRateReconnectRecoveryReason ?: reason
         val runnable = Runnable {
+            if (!pendingHeartRateReconnectRecovery) {
+                Log.d(TAG, "HR-RECONNECT-RECOVERY skipped because pending flag cleared: reason=$originalReason")
+                return@Runnable
+            }
             if (!::aacpManager.isInitialized) {
-                Log.d(TAG, "HR-ROLE-RECOVERY skipped because AACP manager is not ready at retry: reason=$reason")
+                Log.d(TAG, "HR-RECONNECT-RECOVERY skipped because AACP manager is not ready: reason=$originalReason")
                 return@Runnable
             }
             if (BluetoothConnectionManager.aacpSocket?.isConnected != true) {
-                Log.d(TAG, "HR-ROLE-RECOVERY skipped because AACP socket is not connected at retry: reason=$reason")
+                Log.d(TAG, "HR-RECONNECT-RECOVERY skipped because AACP socket is not connected: reason=$originalReason")
                 return@Runnable
             }
             if (!currentAnyEarbudInEar()) {
-                Log.d(TAG, "HR-ROLE-RECOVERY skipped because both earbuds are out-of-ear at retry: reason=$reason")
-                return@Runnable
-            }
-            if (!aacpManager.heartRateStreamingRequested) {
-                Log.d(TAG, "HR-ROLE-RECOVERY skipped because HR is no longer requested at retry: reason=$reason")
+                Log.d(TAG, "HR-RECONNECT-RECOVERY skipped because both earbuds are out-of-ear: reason=$originalReason")
                 return@Runnable
             }
 
-            Log.d(TAG, "HR-ROLE-RECOVERY restarting heart-rate stream after role/swap event: reason=$reason")
-            broadcastHeartRateStateChanged(enabled = true, receiving = false, reason = "role_swap_recovery_restarting")
+            Log.d(TAG, "HR-RECONNECT-RECOVERY restarting heart-rate after fresh AACP reconnect: reason=$originalReason")
+            broadcastHeartRateStateChanged(enabled = true, receiving = false, reason = "hr_reconnect_recovery_restarting")
             val stopped = aacpManager.forceStopHeartRateStreaming()
-            Log.d(TAG, "HR-ROLE-RECOVERY stop/off sent before restart: stopped=$stopped reason=$reason")
+            Log.d(TAG, "HR-RECONNECT-RECOVERY stop/off sent on fresh socket: stopped=$stopped reason=$originalReason")
 
-            heartRateRoleRecoveryHandler.postDelayed(Runnable {
+            heartRateReconnectRecoveryHandler.postDelayed(Runnable {
                 if (!::aacpManager.isInitialized) {
-                    Log.d(TAG, "HR-ROLE-RECOVERY restart skipped because AACP manager is gone: reason=$reason")
+                    Log.d(TAG, "HR-RECONNECT-RECOVERY restart skipped because AACP manager is gone: reason=$originalReason")
                     return@Runnable
                 }
                 if (BluetoothConnectionManager.aacpSocket?.isConnected != true) {
-                    Log.d(TAG, "HR-ROLE-RECOVERY restart skipped because AACP socket disconnected: reason=$reason")
+                    Log.d(TAG, "HR-RECONNECT-RECOVERY restart skipped because AACP socket disconnected: reason=$originalReason")
                     return@Runnable
                 }
                 if (!currentAnyEarbudInEar()) {
-                    Log.d(TAG, "HR-ROLE-RECOVERY restart skipped because both earbuds are out-of-ear: reason=$reason")
+                    Log.d(TAG, "HR-RECONNECT-RECOVERY restart skipped because both earbuds are out-of-ear: reason=$originalReason")
                     return@Runnable
                 }
 
                 val started = aacpManager.setHeartRateStreaming(true)
-                Log.d(TAG, "HR-ROLE-RECOVERY restart result started=$started reason=$reason")
+                pendingHeartRateReconnectRecovery = !started
+                if (started) {
+                    pendingHeartRateReconnectRecoveryReason = null
+                    roleSwapObservedWhileHeartRateRequested = false
+                }
+                Log.d(TAG, "HR-RECONNECT-RECOVERY restart result started=$started reason=$originalReason pendingAfter=$pendingHeartRateReconnectRecovery")
                 broadcastHeartRateStateChanged(
                     enabled = started,
                     receiving = false,
-                    reason = if (started) "role_swap_recovery_restarted" else "role_swap_recovery_failed"
+                    reason = if (started) "hr_reconnect_recovery_restarted" else "hr_reconnect_recovery_failed"
                 )
-            }, HEART_RATE_ROLE_SWAP_RESTART_GAP_MS)
+            }, HEART_RATE_RECONNECT_RESTART_GAP_MS)
         }
-        heartRateRoleRecoveryRunnable = runnable
-        heartRateRoleRecoveryHandler.postDelayed(runnable, HEART_RATE_ROLE_SWAP_RECOVERY_DELAY_MS)
-        Log.d(TAG, "HR-ROLE-RECOVERY scheduled in ${HEART_RATE_ROLE_SWAP_RECOVERY_DELAY_MS}ms: reason=$reason")
+        heartRateReconnectRecoveryRunnable = runnable
+        heartRateReconnectRecoveryHandler.postDelayed(runnable, HEART_RATE_RECONNECT_RECOVERY_DELAY_MS)
+        Log.d(TAG, "HR-RECONNECT-RECOVERY scheduled in ${HEART_RATE_RECONNECT_RECOVERY_DELAY_MS}ms after reconnect: reason=$originalReason trigger=$reason")
+        return true
     }
 
     private fun cancelHeartRateAutoStartWhenSafe(reason: String) {
@@ -1403,6 +1452,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun scheduleHeartRateAutoStartWhenSafe(reason: String) {
         cancelHeartRateAutoStartWhenSafe("reschedule_$reason")
+        if (pendingHeartRateReconnectRecovery) {
+            Log.d(TAG, "HR auto-start when safe skipped because reconnect recovery is pending: reason=$reason pendingReason=$pendingHeartRateReconnectRecoveryReason")
+            return
+        }
         if (!config.heartRateAutoStartWhenSafe) {
             Log.d(TAG, "HR auto-start when safe disabled: reason=$reason")
             return
@@ -3015,7 +3068,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             })
 
                     setupStemActions()
-                    scheduleHeartRateAutoStartWhenSafe("aacp_connected_after_handshake")
+                    val reconnectRecoveryScheduled = schedulePendingHeartRateReconnectRecovery("aacp_connected_after_handshake")
+                    if (!reconnectRecoveryScheduled) {
+                        scheduleHeartRateAutoStartWhenSafe("aacp_connected_after_handshake")
+                    }
 
                     while (socket.isConnected) {
                         try {
@@ -3046,6 +3102,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
                             } else if (bytesRead == -1) {
                                 Log.d("AirPodsService", "socket closed (bytesRead = -1)")
+                                maybeArmHeartRateReconnectRecoveryBeforeDisconnect("socket_bytes_read_minus_one")
                                 sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
                                     setPackage(packageName)
                                 })
@@ -3055,6 +3112,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         } catch (e: Exception) {
                             Log.w(TAG, "Error reading data, we have probably disconnected.")
                             e.printStackTrace()
+                            maybeArmHeartRateReconnectRecoveryBeforeDisconnect("socket_read_exception_${e.javaClass.simpleName}")
                             sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
                                 setPackage(packageName)
                             })
@@ -3065,6 +3123,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     }
                     Log.d("AirPods Service", "socket closed")
 //                        isConnectedLocally = false
+                    maybeArmHeartRateReconnectRecoveryBeforeDisconnect("socket_loop_ended")
                     aacpManager.disconnected()
                     updateNotificationContent(false)
                     sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
@@ -3384,7 +3443,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             e.printStackTrace()
         }
         cancelHeartRateAutoStartWhenSafe("service_destroyed")
-        cancelHeartRateRoleSwapRecovery("service_destroyed")
+        cancelHeartRateReconnectRecovery("service_destroyed", clearPending = true)
         if (checkSelfPermission("android.permission.READ_PHONE_STATE") == PackageManager.PERMISSION_GRANTED) {
             telephonyManager.unregisterTelephonyCallback(phoneStateListener)
         }
