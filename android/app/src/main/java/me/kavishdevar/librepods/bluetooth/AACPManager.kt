@@ -43,6 +43,10 @@ class AACPManager {
             const val CONTROL_COMMAND: Byte = 0x09
             const val BUD_ROLE: Byte = 0x08
             const val EAR_DETECTION: Byte = 0x06
+            const val BUD_SWAP_2_PROCEDURE: Byte = 0x47
+            const val BUD_SWAP_IMMINENT_CONFIRM: Byte = 0x48
+            const val BUD_SWAP_2_COMPLETION: Byte = 0x49
+            const val BUD_SWAP_COMPLETE_CONFIRM: Byte = 0x4A
             const val CONVERSATION_AWARENESS: Byte = 0x4B
             const val INFORMATION: Byte = 0x1D
             const val RENAME: Byte = 0x1A
@@ -271,6 +275,8 @@ class AACPManager {
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
         fun onHeartRateSampleReceived(sample: HeartRateSample)
+        fun onBudRoleReceived(role: Int?, budRole: ByteArray)
+        fun onBudSwapEventReceived(opcode: Byte, budSwap: ByteArray)
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -572,9 +578,20 @@ class AACPManager {
                 }
                 Log.d(
                     TAG,
-                    "HOST-BUD-ROLE RX raw=${packet.joinToString(" ") { "%02X".format(it) }} role=$roleName"
+                    "HR-ROLE-STATE RX bud_role raw=${packet.joinToString(" ") { "%02X".format(it) }} role=$roleName"
                 )
-                callback?.onUnknownPacketReceived(packet)
+                callback?.onBudRoleReceived(role, packet)
+            }
+
+            Opcodes.BUD_SWAP_2_PROCEDURE,
+            Opcodes.BUD_SWAP_IMMINENT_CONFIRM,
+            Opcodes.BUD_SWAP_2_COMPLETION,
+            Opcodes.BUD_SWAP_COMPLETE_CONFIRM -> {
+                Log.d(
+                    TAG,
+                    "HR-ROLE-STATE RX bud_swap opcode=${packet.getOrNull(4)?.toHexString()} raw=${packet.joinToString(" ") { "%02X".format(it) }}"
+                )
+                callback?.onBudSwapEventReceived(packet[4], packet)
             }
 
             Opcodes.EAR_DETECTION -> {
@@ -784,18 +801,6 @@ class AACPManager {
         return sendControlCommand(
             ControlCommandIdentifiers.HRM_STATE.value,
             byteArrayOf((if (enabled) 0x01 else 0x02).toByte(), 0x00, 0x00, 0x00)
-        )
-    }
-
-    fun requestPrimaryHostBud(leftPrimary: Boolean): Boolean {
-        val roleValue = if (leftPrimary) 0x01 else 0x02
-        Log.d(
-            TAG,
-            "HOST-BUD-ROLE TX request primary=${if (leftPrimary) "left" else "right"} value=%02X 00 00 00".format(roleValue)
-        )
-        return sendControlCommand(
-            ControlCommandIdentifiers.BUD_ROLE.value,
-            byteArrayOf(roleValue.toByte(), 0x00, 0x00, 0x00)
         )
     }
 
