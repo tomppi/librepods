@@ -137,6 +137,8 @@ import kotlin.time.Duration.Companion.milliseconds
 private const val TAG = "AirPodsService"
 private const val HEART_RATE_RECONNECT_RECOVERY_DELAY_MS = 1_500L
 private const val HEART_RATE_RECONNECT_RESTART_GAP_MS = 500L
+private const val HEART_RATE_SOFT_REFRESH_STEP_MS = 250L
+private const val HEART_RATE_STOP_COMMAND_GAP_MS = 300L
 
 object ServiceManager {
     private var service: AirPodsService? = null
@@ -170,6 +172,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var pendingHeartRateReconnectRecoveryReason: String? = null
     private var roleSwapObservedWhileHeartRateRequested = false
     private var currentPrimaryBudRole: Int? = null
+    @Volatile
+    private var heartRateSoftRefreshGeneration = 0
     private var aacpConnectInProgress = false
 
     data class ServiceConfig(
@@ -1352,7 +1356,74 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         roleSwapObservedWhileHeartRateRequested = true
         armHeartRateReconnectRecovery("role_event_$reason")
-        Log.d(TAG, "HR-ROLE-RECOVERY passive mode: waiting for AACP reconnect instead of immediate stop/start, reason=$reason")
+        scheduleHeartRateSoftRefreshAfterRoleEvent(reason)
+        Log.d(TAG, "HR-ROLE-RECOVERY passive mode: soft-refreshing AACP and waiting for reconnect instead of immediate stop/start, reason=$reason")
+    }
+
+    private fun scheduleHeartRateSoftRefreshAfterRoleEvent(reason: String) {
+        if (!::aacpManager.isInitialized) return
+        if (!aacpManager.heartRateStreamingRequested) return
+        if (BluetoothConnectionManager.aacpSocket?.isConnected != true) {
+            Log.d(TAG, "HR-SOFT-REFRESH skipped because AACP socket is not connected: reason=$reason")
+            return
+        }
+
+        val generation = ++heartRateSoftRefreshGeneration
+        CoroutineScope(Dispatchers.IO).launch {
+            fun stillCurrent(): Boolean = generation == heartRateSoftRefreshGeneration &&
+                ::aacpManager.isInitialized &&
+                aacpManager.heartRateStreamingRequested &&
+                BluetoothConnectionManager.aacpSocket?.isConnected == true
+
+            delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+            if (!stillCurrent()) return@launch
+            aacpManager.sendPacket(aacpManager.createHandshakePacket())
+
+            delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+            if (!stillCurrent()) return@launch
+            aacpManager.sendSetFeatureFlagsPacket()
+
+            delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+            if (!stillCurrent()) return@launch
+            aacpManager.sendNotificationRequest()
+
+            delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+            if (!stillCurrent()) return@launch
+            aacpManager.sendRequestProximityKeys(
+                (AACPManager.Companion.ProximityKeyType.IRK.value +
+                    AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte()
+            )
+
+            Log.d(TAG, "HR-SOFT-REFRESH completed after role/swap event: reason=$reason")
+        }
+    }
+
+    fun manualStopHeartRateStreaming() {
+        if (!::aacpManager.isInitialized) return
+
+        ++heartRateSoftRefreshGeneration
+        cancelHeartRateAutoStartWhenSafe("manual_hr_stop")
+        cancelHeartRateReconnectRecovery("manual_hr_stop", clearPending = true)
+        aacpManager.markHeartRateStreamingStopped()
+        broadcastHeartRateStateChanged(enabled = false, receiving = false, reason = "manual_hr_stop")
+
+        CoroutineScope(Dispatchers.IO).launch {
+            if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
+                aacpManager.sendPacket(aacpManager.createHandshakePacket())
+                delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+                aacpManager.sendSetFeatureFlagsPacket()
+                delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+                aacpManager.sendNotificationRequest()
+                delay(HEART_RATE_SOFT_REFRESH_STEP_MS)
+            }
+
+            aacpManager.sendHeartRateMonitorEnabled(false)
+            delay(HEART_RATE_STOP_COMMAND_GAP_MS)
+            aacpManager.sendStopHeartRate()
+            delay(HEART_RATE_STOP_COMMAND_GAP_MS)
+            aacpManager.sendHeartRateMonitorEnabled(false)
+            Log.d(TAG, "HR manual stop completed with stop-specific AACP refresh")
+        }
     }
 
     private fun maybeArmHeartRateReconnectRecoveryBeforeDisconnect(reason: String) {

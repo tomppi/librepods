@@ -796,6 +796,10 @@ class AACPManager {
         return stopOk && controlOk
     }
 
+    fun markHeartRateStreamingStopped() {
+        heartRateStreamingRequested = false
+    }
+
 
     fun sendHeartRateMonitorEnabled(enabled: Boolean): Boolean {
         return sendControlCommand(

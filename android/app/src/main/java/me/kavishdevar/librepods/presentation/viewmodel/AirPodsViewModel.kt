@@ -324,7 +324,7 @@ class AirPodsViewModel(
         }
 
         if (!enabled) {
-            service.aacpManager.setHeartRateStreaming(false)
+            service.manualStopHeartRateStreaming()
             _uiState.update {
                 it.copy(
                     heartRateStreamingEnabled = false,
@@ -744,21 +744,22 @@ class AirPodsViewModel(
             _uiState.update { it.copy(customEq = customEq) }
         }
         service.aacpManager.heartRateSampleCallback = { sample ->
-            _uiState.update { state ->
-                state.copy(
-                    heartRateStreamingEnabled = true,
-                    heartRateReceiving = true,
-                    latestHeartRateBpm = sample.bpm,
-                    latestHeartRateSampleMillis = sample.timestampMillis
-                )
-            }
-
-            if (_uiState.value.heartRateHealthConnectSyncEnabled) {
-                synchronized(pendingHeartRateSamplesLock) {
-                    pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
-                        timestampMillis = sample.timestampMillis,
-                        bpm = sample.bpm
+            if (_uiState.value.heartRateStreamingEnabled) {
+                _uiState.update { state ->
+                    state.copy(
+                        heartRateReceiving = true,
+                        latestHeartRateBpm = sample.bpm,
+                        latestHeartRateSampleMillis = sample.timestampMillis
                     )
+                }
+
+                if (_uiState.value.heartRateHealthConnectSyncEnabled) {
+                    synchronized(pendingHeartRateSamplesLock) {
+                        pendingHeartRateSamples += HealthConnectHeartRateWriter.HeartRateSample(
+                            timestampMillis = sample.timestampMillis,
+                            bpm = sample.bpm
+                        )
+                    }
                 }
             }
         }
