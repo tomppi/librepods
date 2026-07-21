@@ -1,16 +1,18 @@
 name: Apply HR RTBuddy-only stop experiment
 
 on:
-  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - agent/hr-rtbuddy-only-stop
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.ref == 'agent/hr-stop-trigger'
     runs-on: ubuntu-latest
     steps:
       - name: Check out experiment branch
