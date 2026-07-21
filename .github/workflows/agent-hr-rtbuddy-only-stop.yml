@@ -29,22 +29,15 @@ jobs:
 
           path = Path("android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt")
           text = path.read_text()
-          old = """    fun forceStopHeartRateStreaming(): Boolean {
-              val stopOk = sendStopHeartRate()
-              val controlOk = sendHeartRateMonitorEnabled(false)
-              heartRateStreamingRequested = false
-              return stopOk && controlOk
-          }
-          """
-          new = """    fun forceStopHeartRateStreaming(): Boolean {
-              val stopOk = sendStopHeartRate()
-              heartRateStreamingRequested = false
-              return stopOk
-          }
-          """
-          if old not in text:
-              raise SystemExit("Expected forceStopHeartRateStreaming block was not found")
-          path.write_text(text.replace(old, new, 1))
+          control_line = "        val controlOk = sendHeartRateMonitorEnabled(false)\n"
+          return_line = "        return stopOk && controlOk"
+          if text.count(control_line) != 1:
+              raise SystemExit(f"Expected one AACP HR stop line, found {text.count(control_line)}")
+          if text.count(return_line) != 1:
+              raise SystemExit(f"Expected one combined stop result line, found {text.count(return_line)}")
+          text = text.replace(control_line, "", 1)
+          text = text.replace(return_line, "        return stopOk", 1)
+          path.write_text(text)
           PY
           rm .github/workflows/agent-hr-rtbuddy-only-stop.yml
 
