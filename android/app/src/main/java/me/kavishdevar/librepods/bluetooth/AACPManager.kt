@@ -791,9 +791,8 @@ class AACPManager {
 
     fun forceStopHeartRateStreaming(): Boolean {
         val stopOk = sendStopHeartRate()
-        val controlOk = sendHeartRateMonitorEnabled(false)
         heartRateStreamingRequested = false
-        return stopOk && controlOk
+        return stopOk
     }
 
     fun markHeartRateStreamingStopped() {
