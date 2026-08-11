@@ -54,16 +54,15 @@ object HeadTracking {
     private const val CALIBRATION_SAMPLE_COUNT = 10
     private const val ORIENTATION_OFFSET = 5500
 
-    // Sensor field offsets *inside the motion payload* as documented in
-    // docs/AAP Definitions.md ("Received Head Tracking Sensor Data"). They are
-    // relative to the payload located by parsing the SensorDataWX protobuf,
-    // never absolute offsets into the whole AACP frame.
-    private const val ORIENTATION_1_OFFSET = 0
-    private const val ORIENTATION_2_OFFSET = 2
-    private const val ORIENTATION_3_OFFSET = 4
-    private const val ACCEL_HORIZONTAL_OFFSET = 8
-    private const val ACCEL_VERTICAL_OFFSET = 10
-    private const val SENSOR_PAYLOAD_MIN_SIZE = 12
+    // Sensor field offsets *inside the motion payload*, relative to the payload located by
+    // parsing the SensorDataWX protobuf (see docs/AAP Definitions.md). The payload layout is
+    // a fixed firmware blob: [20-byte header][o1][o2][o3][2 bytes][hAccel][vAccel][tail].
+    private const val ORIENTATION_1_OFFSET = 20
+    private const val ORIENTATION_2_OFFSET = 22
+    private const val ORIENTATION_3_OFFSET = 24
+    private const val ACCEL_HORIZONTAL_OFFSET = 28
+    private const val ACCEL_VERTICAL_OFFSET = 30
+    private const val SENSOR_PAYLOAD_MIN_SIZE = 32
 
     fun processPacket(packet: ByteArray) {
         // Parse the SensorDataWX protobuf to locate the motion payload, then read the
