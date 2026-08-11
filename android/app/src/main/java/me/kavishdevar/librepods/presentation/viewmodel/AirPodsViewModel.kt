@@ -674,6 +674,8 @@ class AirPodsViewModel(
         }
     }
 
+    suspend fun testHeadTracking(): Boolean = service.testHeadTracking()
+
     fun setHeartRateMonitoringEnabled(enabled: Boolean) {
         if (!isReady) return
         if (isDemoMode) {

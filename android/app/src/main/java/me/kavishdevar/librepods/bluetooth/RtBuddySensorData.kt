@@ -201,19 +201,12 @@ object RtBuddySensorData {
     ) {
         if (depth > MAX_COMMAND_ENVELOPE_DEPTH || payloads.size >= MAX_PAYLOADS) return
         val message = parseProtoMessage(data, start, end) ?: return
-        val service = message.firstVarint(FIELD_SERVICE)?.toInt()
 
         message.fields.forEach { field ->
             if (field.wireType == WIRE_LENGTH_DELIMITED) {
-                // Capture the payload bytes and their absolute position in the frame.
                 val bytes = data.copyOfRange(field.valueStart, field.valueEnd)
-                val payload = MotionPayload(
-                    bytes = bytes,
-                    frameOffset = field.valueStart,
-                    service = service
-                )
                 if (payloads.none { it.bytes.contentEquals(bytes) }) {
-                    payloads += payload
+                    payloads += MotionPayload(bytes)
                 }
                 if (payloads.size >= MAX_PAYLOADS) return
             }
@@ -338,11 +331,7 @@ object RtBuddySensorData {
     )
 
     data class MotionPayload(
-        val bytes: ByteArray,
-        /** Absolute offset of the payload's first byte inside the full AACP frame. */
-        val frameOffset: Int = -1,
-        /** RTBuddy service this payload belongs to, if the parent message carried one. */
-        val service: Int? = null
+        val bytes: ByteArray
     )
 
     private const val MAX_COMMAND_ENVELOPE_DEPTH = 3

@@ -39,12 +39,6 @@ object HeadTracking {
     private val _lastPacketAt = MutableStateFlow(0L)
     val lastPacketAt = _lastPacketAt.asStateFlow()
 
-    private val _lastRawHex = MutableStateFlow("")
-    val lastRawHex = _lastRawHex.asStateFlow()
-
-    private val _lastParsed = MutableStateFlow("")
-    val lastParsed = _lastParsed.asStateFlow()
-
     private val calibrationSamples = mutableListOf<Triple<Int, Int, Int>>()
     private var isCalibrated = false
     private var o1Neutral = 19000
@@ -68,11 +62,6 @@ object HeadTracking {
         // Parse the SensorDataWX protobuf to locate the motion payload, then read the
         // sensor values relative to it. No fixed frame offsets.
         val motion = RtBuddySensorData.parseMotionCommandPayloads(packet) ?: return
-
-        _lastRawHex.value = packet.joinToString(" ") { "%02X".format(it) }
-        _lastParsed.value = motion.payloads.joinToString("\n") { p ->
-            "svc=${p.service} off=${p.frameOffset} len=${p.bytes.size} hex=${p.bytes.joinToString(" ") { "%02X".format(it) }}"
-        }
 
         val payload = motion.payloads
             .filter { it.bytes.size >= SENSOR_PAYLOAD_MIN_SIZE }
@@ -141,7 +130,5 @@ object HeadTracking {
         _acceleration.value = Acceleration()
         _packetCount.value = 0L
         _lastPacketAt.value = 0L
-        _lastRawHex.value = ""
-        _lastParsed.value = ""
     }
 }

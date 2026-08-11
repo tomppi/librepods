@@ -75,6 +75,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -83,6 +84,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.MainActivity
 import me.kavishdevar.librepods.R
@@ -2228,6 +2230,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun sendToast(message: String) {
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    suspend fun testHeadTracking(): Boolean {
+        initGestureDetector()
+        startHeadTracking()
+        return suspendCancellableCoroutine { continuation ->
+            gestureDetector?.startDetection(doNotStop = true) { accepted ->
+                if (continuation.isActive) {
+                    continuation.resume(accepted) { _, _, _ ->
+                        gestureDetector?.stopDetection()
+                    }
+                }
+            }
         }
     }
 
