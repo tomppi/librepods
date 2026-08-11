@@ -21,6 +21,7 @@ package me.kavishdevar.librepods.data
 import android.os.Parcelable
 import android.util.Log
 import kotlinx.parcelize.Parcelize
+import me.kavishdevar.librepods.bluetooth.RtBuddySensorData
 
 // TODO: Remove everything but Battery-related stuff
 
@@ -246,20 +247,10 @@ class AirPodsNotifications {
 }
 
 fun isHeadTrackingData(data: ByteArray): Boolean {
-    if (data.size <= 60) return false
-
-    val prefixPattern = byteArrayOf(
-        0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00,
-        0x10, 0x00
-    )
-
-    for (i in prefixPattern.indices) {
-        if (data[i] != prefixPattern[i]) return false
-    }
-
-    if (data[10] != 0x44.toByte() && data[10] != 0x45.toByte()) return false
-
-    if (data[11] != 0x00.toByte()) return false
-
-    return true
+    // Head-tracking sensor data is streamed as RTBuddy "SensorDataWX" frames
+    // (AACP BuddyCommand 0x17, RTBuddy descriptor 0x00100000). Validate the
+    // frame structurally instead of matching magic length bytes.
+    if (!RtBuddySensorData.isSensorDataWxFrame(data)) return false
+    val motion = RtBuddySensorData.parseMotionCommandPayloads(data) ?: return false
+    return motion.payloads.isNotEmpty()
 }

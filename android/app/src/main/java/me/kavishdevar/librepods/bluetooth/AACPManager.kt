@@ -625,9 +625,13 @@ class AACPManager {
             }
 
             Opcodes.HEADTRACKING -> {
-                if (packet.size < 70) {
-                    Log.w(
-                        TAG, "Received HEADTRACKING packet too short: ${
+                // Head-tracking sensor data is streamed as RTBuddy "SensorDataWX" frames.
+                // Validate the RTBuddy structure instead of relying on a minimum packet
+                // length so control frames on the same opcode are not mistaken for live
+                // sensor data. (Heart-rate frames were already consumed by the decoder.)
+                if (!RtBuddySensorData.isSensorDataWxFrame(packet)) {
+                    Log.d(
+                        TAG, "Ignoring non-sensor BuddyCommand packet: ${
                         packet.joinToString(" ") {
                             "%02X".format(it)
                         }

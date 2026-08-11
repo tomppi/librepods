@@ -95,6 +95,7 @@ import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.bluetooth.BLEManager
 import me.kavishdevar.librepods.bluetooth.BluetoothConnectionManager
 import me.kavishdevar.librepods.bluetooth.HeartRateSample
+import me.kavishdevar.librepods.bluetooth.RtBuddySensorData
 import me.kavishdevar.librepods.bluetooth.createBluetoothSocket
 import me.kavishdevar.librepods.data.AirPodsInstance
 import me.kavishdevar.librepods.data.AirPodsModels
@@ -137,14 +138,20 @@ import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_ICON
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_LOW_BATTERY_THRESHOLD
 import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.coroutines.coroutineContext
 
 private const val TAG = "AirPodsService"
+
+// Sensor field offsets inside the full AACP frame as documented in
+// docs/AAP Definitions.md ("Received Head Tracking Sensor Data").
+private const val ACCEL_HORIZONTAL_OFFSET = 51
+private const val ACCEL_VERTICAL_OFFSET = 53
+
+private fun leInt16(data: ByteArray, offset: Int): Int =
+    (data[offset].toInt() and 0xFF) or (data[offset + 1].toInt() shl 8)
 
 object ServiceManager {
     private var service: AirPodsService? = null
@@ -2324,8 +2331,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @RequiresApi(Build.VERSION_CODES.R)
     fun processHeadTrackingData(data: ByteArray) {
-        val horizontal = ByteBuffer.wrap(data, 51, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
-        val vertical = ByteBuffer.wrap(data, 53, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
+        // Only interpret frames that are structurally valid SensorDataWX motion frames.
+        val motion = RtBuddySensorData.parseMotionCommandPayloads(data) ?: return
+        if (motion.payloads.isEmpty()) return
+        if (data.size <= ACCEL_VERTICAL_OFFSET + 1) return
+
+        val horizontal = leInt16(data, ACCEL_HORIZONTAL_OFFSET)
+        val vertical = leInt16(data, ACCEL_VERTICAL_OFFSET)
         try {
             gestureDetector?.processHeadOrientation(horizontal, vertical)
         } catch (e: Exception) {

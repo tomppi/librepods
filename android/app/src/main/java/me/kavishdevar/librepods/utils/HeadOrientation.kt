@@ -20,6 +20,7 @@ package me.kavishdevar.librepods.utils
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import me.kavishdevar.librepods.bluetooth.RtBuddySensorData
 import kotlin.math.roundToInt
 
 data class Orientation(val pitch: Float = 0f, val yaw: Float = 0f)
@@ -41,13 +42,27 @@ object HeadTracking {
     private const val CALIBRATION_SAMPLE_COUNT = 10
     private const val ORIENTATION_OFFSET = 5500
 
-    fun processPacket(packet: ByteArray) {
-        val o1 = bytesToInt(packet[43], packet[44])
-        val o2 = bytesToInt(packet[45], packet[46])
-        val o3 = bytesToInt(packet[47], packet[48])
+    // Sensor field offsets inside the full AACP frame as documented in
+    // docs/AAP Definitions.md ("Received Head Tracking Sensor Data").
+    private const val ORIENTATION_1_OFFSET = 43
+    private const val ORIENTATION_2_OFFSET = 45
+    private const val ORIENTATION_3_OFFSET = 47
+    private const val ACCEL_HORIZONTAL_OFFSET = 51
+    private const val ACCEL_VERTICAL_OFFSET = 53
 
-        val horizontalAccel = bytesToInt(packet[51], packet[52]).toFloat()
-        val verticalAccel = bytesToInt(packet[53], packet[54]).toFloat()
+    fun processPacket(packet: ByteArray) {
+        // Gate extraction behind proper RTBuddy/SensorDataWX validation so only real
+        // motion-sensor frames are interpreted as head-tracking data.
+        val motion = RtBuddySensorData.parseMotionCommandPayloads(packet) ?: return
+        if (motion.payloads.isEmpty()) return
+        if (packet.size <= ACCEL_VERTICAL_OFFSET + 1) return
+
+        val o1 = leInt16(packet, ORIENTATION_1_OFFSET)
+        val o2 = leInt16(packet, ORIENTATION_2_OFFSET)
+        val o3 = leInt16(packet, ORIENTATION_3_OFFSET)
+
+        val horizontalAccel = leInt16(packet, ACCEL_HORIZONTAL_OFFSET).toFloat()
+        val verticalAccel = leInt16(packet, ACCEL_VERTICAL_OFFSET).toFloat()
 
         if (!isCalibrated) {
             calibrationSamples.add(Triple(o1, o2, o3))
@@ -88,9 +103,8 @@ object HeadTracking {
         return Orientation(pitch, yaw)
     }
 
-    private fun bytesToInt(b1: Byte, b2: Byte): Int {
-        return (b2.toInt() shl 8) or (b1.toInt() and 0xFF)
-    }
+    private fun leInt16(data: ByteArray, offset: Int): Int =
+        (data[offset].toInt() and 0xFF) or (data[offset + 1].toInt() shl 8)
 
     fun reset() {
         calibrationSamples.clear()
