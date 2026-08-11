@@ -63,6 +63,8 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel) {
     val acceleration by HeadTracking.acceleration.collectAsState()
     val packetCount by HeadTracking.packetCount.collectAsState()
     val lastPacketAt by HeadTracking.lastPacketAt.collectAsState()
+    val lastRawHex by HeadTracking.lastRawHex.collectAsState()
+    val lastParsed by HeadTracking.lastParsed.collectAsState()
 
     // Keep the stream running while the user is inspecting the live indicator.
     DisposableEffect(Unit) {
@@ -142,6 +144,20 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel) {
                     SensorValue("Accel H", acceleration.horizontal.round())
                     SensorValue("Accel V", acceleration.vertical.round())
                     SensorValue("", "")
+                }
+                if (lastParsed.isNotEmpty()) {
+                    Text(
+                        text = "Parsed payloads:\n$lastParsed",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (lastRawHex.isNotEmpty()) {
+                    Text(
+                        text = "Frame:\n$lastRawHex",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

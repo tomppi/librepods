@@ -131,16 +131,21 @@ object RtBuddySensorData {
     }
 
     /**
-     * Parses the SensorDataWX protobuf of a frame and returns the length-delimited
-     * Command payloads (field 7) whose service is a motion sensor, along with the
-     * sequence and log type of the frame. Sub-messages are traversed to the same
-     * bounded depth used by the heart-rate decoder because some firmware variants
-     * wrap the Command inside an additional envelope.
+     * Parses the SensorDataWX protobuf of a frame and returns every length-delimited
+     * payload candidate along with where it lives inside the frame, plus the frame's
+     * sequence and log type. Sub-messages are traversed to the same bounded depth used
+     * by the heart-rate decoder because some firmware variants wrap data in nested
+     * messages. Sensor values are then read relative to a located payload rather than
+     * from fixed offsets in the frame.
      */
     fun parseMotionCommandPayloads(data: ByteArray, frameOffset: Int = 0): MotionData? {
         if (!isSensorDataWxFrame(data, frameOffset)) return null
         val protoStart = frameOffset + AACP_RTBUDDY_HEADER_LENGTH
         val protoEnd = data.size
+
+        // Some frames carry two trailing bytes when log_type has bit 0x4 set
+        // (see rtbuddy.lua). Detect them by parsing with the trailer included and,
+        // if that yields a service field, also try without it.
         val topLevel = parseProtoMessage(data, protoStart, protoEnd) ?: return null
 
         val sequence = topLevel.firstVarint(FIELD_SEQUENCE)?.toInt() ?: -1
@@ -149,9 +154,9 @@ object RtBuddySensorData {
         val payloads = mutableListOf<MotionPayload>()
         topLevel.fields.forEach { field ->
             if (field.wireType == WIRE_LENGTH_DELIMITED &&
-                field.number in SENSOR_DATA_COMMAND_FIELDS
+                payloads.size < MAX_PAYLOADS
             ) {
-                collectMotionPayloads(
+                collectPayloads(
                     data = data,
                     start = field.valueStart,
                     end = field.valueEnd,
@@ -160,7 +165,26 @@ object RtBuddySensorData {
                 )
             }
         }
-        if (payloads.isEmpty()) return MotionData(sequence, logType, emptyList())
+
+        // Fallback: if the first parse didn't traverse (e.g. nested envelope), retry the
+        // whole protobuf once more allowing the two-byte trailer stripped.
+        if (payloads.isEmpty()) {
+            val retried = parseProtoMessage(data, protoStart, protoEnd - 2) ?: return null
+            retried.fields.forEach { field ->
+                if (field.wireType == WIRE_LENGTH_DELIMITED &&
+                    payloads.size < MAX_PAYLOADS
+                ) {
+                    collectPayloads(
+                        data = data,
+                        start = field.valueStart,
+                        end = field.valueEnd,
+                        depth = 0,
+                        payloads = payloads
+                    )
+                }
+            }
+        }
+
         return MotionData(
             sequence = sequence,
             logType = logType,
@@ -168,7 +192,7 @@ object RtBuddySensorData {
         )
     }
 
-    private fun collectMotionPayloads(
+    private fun collectPayloads(
         data: ByteArray,
         start: Int,
         end: Int,
@@ -179,16 +203,19 @@ object RtBuddySensorData {
         val message = parseProtoMessage(data, start, end) ?: return
         val service = message.firstVarint(FIELD_SERVICE)?.toInt()
 
-        if (service in MOTION_SERVICES) {
-            message.fields.forEach { field ->
-                if (field.number == FIELD_COMMAND_PAYLOAD &&
-                    field.wireType == WIRE_LENGTH_DELIMITED
-                ) {
-                    val bytes = data.copyOfRange(field.valueStart, field.valueEnd)
-                    if (payloads.none { it.bytes.contentEquals(bytes) }) {
-                        payloads += MotionPayload(bytes)
-                    }
+        message.fields.forEach { field ->
+            if (field.wireType == WIRE_LENGTH_DELIMITED) {
+                // Capture the payload bytes and their absolute position in the frame.
+                val bytes = data.copyOfRange(field.valueStart, field.valueEnd)
+                val payload = MotionPayload(
+                    bytes = bytes,
+                    frameOffset = field.valueStart,
+                    service = service
+                )
+                if (payloads.none { it.bytes.contentEquals(bytes) }) {
+                    payloads += payload
                 }
+                if (payloads.size >= MAX_PAYLOADS) return
             }
         }
 
@@ -197,7 +224,7 @@ object RtBuddySensorData {
             if (field.wireType == WIRE_LENGTH_DELIMITED &&
                 payloads.size < MAX_PAYLOADS
             ) {
-                collectMotionPayloads(
+                collectPayloads(
                     data = data,
                     start = field.valueStart,
                     end = field.valueEnd,
@@ -311,14 +338,17 @@ object RtBuddySensorData {
     )
 
     data class MotionPayload(
-        val bytes: ByteArray
+        val bytes: ByteArray,
+        /** Absolute offset of the payload's first byte inside the full AACP frame. */
+        val frameOffset: Int = -1,
+        /** RTBuddy service this payload belongs to, if the parent message carried one. */
+        val service: Int? = null
     )
 
     private const val MAX_COMMAND_ENVELOPE_DEPTH = 3
     private const val MAX_PAYLOADS = 16
     private const val MAX_PROTO_FIELDS = 96
     private const val MAX_PROTO_FIELD_NUMBER = 4_096L
-    private val SENSOR_DATA_COMMAND_FIELDS = setOf(5, 7, 8, 9, 12)
 
     private fun ByteArray.startsWith(prefix: ByteArray, offset: Int): Boolean {
         if (offset < 0 || offset + prefix.size > size) return false

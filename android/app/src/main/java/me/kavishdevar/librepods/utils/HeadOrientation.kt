@@ -39,6 +39,12 @@ object HeadTracking {
     private val _lastPacketAt = MutableStateFlow(0L)
     val lastPacketAt = _lastPacketAt.asStateFlow()
 
+    private val _lastRawHex = MutableStateFlow("")
+    val lastRawHex = _lastRawHex.asStateFlow()
+
+    private val _lastParsed = MutableStateFlow("")
+    val lastParsed = _lastParsed.asStateFlow()
+
     private val calibrationSamples = mutableListOf<Triple<Int, Int, Int>>()
     private var isCalibrated = false
     private var o1Neutral = 19000
@@ -48,31 +54,44 @@ object HeadTracking {
     private const val CALIBRATION_SAMPLE_COUNT = 10
     private const val ORIENTATION_OFFSET = 5500
 
-    // Sensor field offsets inside the full AACP frame as documented in
-    // docs/AAP Definitions.md ("Received Head Tracking Sensor Data").
-    private const val ORIENTATION_1_OFFSET = 43
-    private const val ORIENTATION_2_OFFSET = 45
-    private const val ORIENTATION_3_OFFSET = 47
-    private const val ACCEL_HORIZONTAL_OFFSET = 51
-    private const val ACCEL_VERTICAL_OFFSET = 53
+    // Sensor field offsets *inside the motion payload* as documented in
+    // docs/AAP Definitions.md ("Received Head Tracking Sensor Data"). They are
+    // relative to the payload located by parsing the SensorDataWX protobuf,
+    // never absolute offsets into the whole AACP frame.
+    private const val ORIENTATION_1_OFFSET = 0
+    private const val ORIENTATION_2_OFFSET = 2
+    private const val ORIENTATION_3_OFFSET = 4
+    private const val ACCEL_HORIZONTAL_OFFSET = 8
+    private const val ACCEL_VERTICAL_OFFSET = 10
+    private const val SENSOR_PAYLOAD_MIN_SIZE = 12
 
     fun processPacket(packet: ByteArray) {
-        // Validate the frame structurally (RTBuddy SensorDataWX) before reading the
-        // documented sensor field offsets. Head-tracking frames carry orientation and
-        // acceleration at fixed positions in the frame, unlike heart-rate frames which
-        // nest the payload inside a Command sub-message.
-        if (!RtBuddySensorData.isSensorDataWxFrame(packet)) return
-        if (packet.size <= ACCEL_VERTICAL_OFFSET + 1) return
+        // Parse the SensorDataWX protobuf to locate the motion payload, then read the
+        // sensor values relative to it. No fixed frame offsets.
+        val motion = RtBuddySensorData.parseMotionCommandPayloads(packet) ?: return
+
+        _lastRawHex.value = packet.joinToString(" ") { "%02X".format(it) }
+        _lastParsed.value = motion.payloads.joinToString("\n") { p ->
+            "svc=${p.service} off=${p.frameOffset} len=${p.bytes.size} hex=${p.bytes.joinToString(" ") { "%02X".format(it) }}"
+        }
+
+        val payload = motion.payloads
+            .filter { it.bytes.size >= SENSOR_PAYLOAD_MIN_SIZE }
+            .firstOrNull()
+            ?: return
+
+        val data = payload.bytes
+        if (data.size < SENSOR_PAYLOAD_MIN_SIZE) return
 
         _packetCount.value = _packetCount.value + 1
         _lastPacketAt.value = System.currentTimeMillis()
 
-        val o1 = leInt16(packet, ORIENTATION_1_OFFSET)
-        val o2 = leInt16(packet, ORIENTATION_2_OFFSET)
-        val o3 = leInt16(packet, ORIENTATION_3_OFFSET)
+        val o1 = leInt16(data, ORIENTATION_1_OFFSET)
+        val o2 = leInt16(data, ORIENTATION_2_OFFSET)
+        val o3 = leInt16(data, ORIENTATION_3_OFFSET)
 
-        val horizontalAccel = leInt16(packet, ACCEL_HORIZONTAL_OFFSET).toFloat()
-        val verticalAccel = leInt16(packet, ACCEL_VERTICAL_OFFSET).toFloat()
+        val horizontalAccel = leInt16(data, ACCEL_HORIZONTAL_OFFSET).toFloat()
+        val verticalAccel = leInt16(data, ACCEL_VERTICAL_OFFSET).toFloat()
 
         if (!isCalibrated) {
             calibrationSamples.add(Triple(o1, o2, o3))
@@ -123,5 +142,7 @@ object HeadTracking {
         _acceleration.value = Acceleration()
         _packetCount.value = 0L
         _lastPacketAt.value = 0L
+        _lastRawHex.value = ""
+        _lastParsed.value = ""
     }
 }
