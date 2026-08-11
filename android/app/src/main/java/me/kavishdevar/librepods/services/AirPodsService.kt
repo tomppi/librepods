@@ -75,7 +75,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -84,7 +83,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.suspendCancellableCoroutine
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.MainActivity
 import me.kavishdevar.librepods.R
@@ -95,7 +93,6 @@ import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.bluetooth.BLEManager
 import me.kavishdevar.librepods.bluetooth.BluetoothConnectionManager
 import me.kavishdevar.librepods.bluetooth.HeartRateSample
-import me.kavishdevar.librepods.bluetooth.RtBuddySensorData
 import me.kavishdevar.librepods.bluetooth.createBluetoothSocket
 import me.kavishdevar.librepods.data.AirPodsInstance
 import me.kavishdevar.librepods.data.AirPodsModels
@@ -144,14 +141,6 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.coroutines.coroutineContext
 
 private const val TAG = "AirPodsService"
-
-// Sensor field offsets inside the full AACP frame as documented in
-// docs/AAP Definitions.md ("Received Head Tracking Sensor Data").
-private const val ACCEL_HORIZONTAL_OFFSET = 51
-private const val ACCEL_VERTICAL_OFFSET = 53
-
-private fun leInt16(data: ByteArray, offset: Int): Int =
-    (data[offset].toInt() and 0xFF) or (data[offset + 1].toInt() shl 8)
 
 object ServiceManager {
     private var service: AirPodsService? = null
@@ -521,14 +510,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         ServiceManager.setService(this)
         startForegroundNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            initGestureDetector()
-        } else {
-            gestureDetector = null
-            config.headGestures = false
-            sharedPreferences.edit { putBoolean("head_gestures", false) }
-            Log.d(TAG, "Head gestures disabled as device is running Android 9 or below")
-        }
 
         bleManager = BLEManager(this)
         bleManager.setAirPodsStatusListener(bleStatusListener)
@@ -1190,8 +1171,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             @SuppressLint("NewApi")
             override fun onHeadTrackingReceived(headTracking: ByteArray) {
                 if (isHeadTrackingActive) {
+                    // Single source of truth: parse once, feed both the live indicator state
+                    // and the call-accept/reject gesture detector from the same parsed values.
                     HeadTracking.processPacket(headTracking)
-                    processHeadTrackingData(headTracking)
+                    val accel = HeadTracking.acceleration.value
+                    gestureDetector?.processHeadOrientation(
+                        accel.horizontal.toInt(),
+                        accel.vertical.toInt()
+                    )
                 }
             }
 
@@ -1787,7 +1774,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
-
     var popupShown = false
     fun showPopup(service: Service, name: String) {
         if (!sharedPreferences.getBoolean("show_bottom_sheet_popup", true)) {
@@ -2239,6 +2225,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    fun sendToast(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun handleIncomingCall() {
         if (isInCall) return
         if (config.headGestures) {
@@ -2251,20 +2243,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 } else {
                     rejectCall()
                     handleIncomingCallOnceConnected = false
-                }
-            }
-
-        }
-    }
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    suspend fun testHeadGestures(): Boolean {
-        return suspendCancellableCoroutine { continuation ->
-            gestureDetector?.startDetection(doNotStop = true) { accepted ->
-                if (continuation.isActive) {
-                    continuation.resume(accepted) { _, _, _ ->
-                        gestureDetector?.stopDetection()
-                    }
                 }
             }
         }
@@ -2320,28 +2298,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             sendToast("Failed to reject call: ${e.message}")
         } finally {
             islandWindow?.close()
-        }
-    }
-
-    fun sendToast(message: String) {
-        Handler(Looper.getMainLooper()).post {
-            Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    @RequiresApi(Build.VERSION_CODES.R)
-    fun processHeadTrackingData(data: ByteArray) {
-        // Only interpret frames that are structurally valid SensorDataWX motion frames.
-        val motion = RtBuddySensorData.parseMotionCommandPayloads(data) ?: return
-        if (motion.payloads.isEmpty()) return
-        if (data.size <= ACCEL_VERTICAL_OFFSET + 1) return
-
-        val horizontal = leInt16(data, ACCEL_HORIZONTAL_OFFSET)
-        val vertical = leInt16(data, ACCEL_VERTICAL_OFFSET)
-        try {
-            gestureDetector?.processHeadOrientation(horizontal, vertical)
-        } catch (e: Exception) {
-            Log.w(TAG, "gesture detector on ${data.toHexString()}: ${e.message}")
         }
     }
 

@@ -33,6 +33,12 @@ object HeadTracking {
     private val _acceleration = MutableStateFlow(Acceleration())
     val acceleration = _acceleration.asStateFlow()
 
+    private val _packetCount = MutableStateFlow(0L)
+    val packetCount = _packetCount.asStateFlow()
+
+    private val _lastPacketAt = MutableStateFlow(0L)
+    val lastPacketAt = _lastPacketAt.asStateFlow()
+
     private val calibrationSamples = mutableListOf<Triple<Int, Int, Int>>()
     private var isCalibrated = false
     private var o1Neutral = 19000
@@ -56,6 +62,9 @@ object HeadTracking {
         val motion = RtBuddySensorData.parseMotionCommandPayloads(packet) ?: return
         if (motion.payloads.isEmpty()) return
         if (packet.size <= ACCEL_VERTICAL_OFFSET + 1) return
+
+        _packetCount.value = _packetCount.value + 1
+        _lastPacketAt.value = System.currentTimeMillis()
 
         val o1 = leInt16(packet, ORIENTATION_1_OFFSET)
         val o2 = leInt16(packet, ORIENTATION_2_OFFSET)
@@ -111,5 +120,7 @@ object HeadTracking {
         isCalibrated = false
         _orientation.value = Orientation()
         _acceleration.value = Acceleration()
+        _packetCount.value = 0L
+        _lastPacketAt.value = 0L
     }
 }
