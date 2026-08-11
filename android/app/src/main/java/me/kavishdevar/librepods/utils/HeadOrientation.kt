@@ -33,6 +33,12 @@ object HeadTracking {
     private val _acceleration = MutableStateFlow(Acceleration())
     val acceleration = _acceleration.asStateFlow()
 
+    private val _packetCount = MutableStateFlow(0L)
+    val packetCount = _packetCount.asStateFlow()
+
+    private val _lastPacketAt = MutableStateFlow(0L)
+    val lastPacketAt = _lastPacketAt.asStateFlow()
+
     private val calibrationSamples = mutableListOf<Triple<Int, Int, Int>>()
     private var isCalibrated = false
     private var o1Neutral = 19000
@@ -42,27 +48,38 @@ object HeadTracking {
     private const val CALIBRATION_SAMPLE_COUNT = 10
     private const val ORIENTATION_OFFSET = 5500
 
-    // Sensor field offsets inside the full AACP frame as documented in
-    // docs/AAP Definitions.md ("Received Head Tracking Sensor Data").
-    private const val ORIENTATION_1_OFFSET = 43
-    private const val ORIENTATION_2_OFFSET = 45
-    private const val ORIENTATION_3_OFFSET = 47
-    private const val ACCEL_HORIZONTAL_OFFSET = 51
-    private const val ACCEL_VERTICAL_OFFSET = 53
+    // Sensor field offsets *inside the motion payload*, relative to the payload located by
+    // parsing the SensorDataWX protobuf (see docs/AAP Definitions.md). The payload layout is
+    // a fixed firmware blob: [20-byte header][o1][o2][o3][2 bytes][hAccel][vAccel][tail].
+    private const val ORIENTATION_1_OFFSET = 20
+    private const val ORIENTATION_2_OFFSET = 22
+    private const val ORIENTATION_3_OFFSET = 24
+    private const val ACCEL_HORIZONTAL_OFFSET = 28
+    private const val ACCEL_VERTICAL_OFFSET = 30
+    private const val SENSOR_PAYLOAD_MIN_SIZE = 32
 
     fun processPacket(packet: ByteArray) {
-        // Gate extraction behind proper RTBuddy/SensorDataWX validation so only real
-        // motion-sensor frames are interpreted as head-tracking data.
+        // Parse the SensorDataWX protobuf to locate the motion payload, then read the
+        // sensor values relative to it. No fixed frame offsets.
         val motion = RtBuddySensorData.parseMotionCommandPayloads(packet) ?: return
-        if (motion.payloads.isEmpty()) return
-        if (packet.size <= ACCEL_VERTICAL_OFFSET + 1) return
 
-        val o1 = leInt16(packet, ORIENTATION_1_OFFSET)
-        val o2 = leInt16(packet, ORIENTATION_2_OFFSET)
-        val o3 = leInt16(packet, ORIENTATION_3_OFFSET)
+        val payload = motion.payloads
+            .filter { it.bytes.size >= SENSOR_PAYLOAD_MIN_SIZE }
+            .firstOrNull()
+            ?: return
 
-        val horizontalAccel = leInt16(packet, ACCEL_HORIZONTAL_OFFSET).toFloat()
-        val verticalAccel = leInt16(packet, ACCEL_VERTICAL_OFFSET).toFloat()
+        val data = payload.bytes
+        if (data.size < SENSOR_PAYLOAD_MIN_SIZE) return
+
+        _packetCount.value = _packetCount.value + 1
+        _lastPacketAt.value = System.currentTimeMillis()
+
+        val o1 = leInt16(data, ORIENTATION_1_OFFSET)
+        val o2 = leInt16(data, ORIENTATION_2_OFFSET)
+        val o3 = leInt16(data, ORIENTATION_3_OFFSET)
+
+        val horizontalAccel = leInt16(data, ACCEL_HORIZONTAL_OFFSET).toFloat()
+        val verticalAccel = leInt16(data, ACCEL_VERTICAL_OFFSET).toFloat()
 
         if (!isCalibrated) {
             calibrationSamples.add(Triple(o1, o2, o3))
@@ -111,5 +128,7 @@ object HeadTracking {
         isCalibrated = false
         _orientation.value = Orientation()
         _acceleration.value = Acceleration()
+        _packetCount.value = 0L
+        _lastPacketAt.value = 0L
     }
 }

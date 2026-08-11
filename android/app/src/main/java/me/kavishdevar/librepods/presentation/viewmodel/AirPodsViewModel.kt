@@ -59,6 +59,7 @@ import me.kavishdevar.librepods.health.HealthConnectExportStatus
 import me.kavishdevar.librepods.services.AirPodsService
 import me.kavishdevar.librepods.services.HeartRateMonitoringState
 import me.kavishdevar.librepods.services.HeartRateMonitoringStatus
+import me.kavishdevar.librepods.utils.HeadTracking
 
 @Suppress("ArrayInDataClass")
 data class AirPodsUiState(
@@ -83,6 +84,7 @@ data class AirPodsUiState(
     val version3: String = "",
 
     val headTrackingActive: Boolean = false,
+    val headTrackingPacketCount: Long = 0L,
     val headGesturesEnabled: Boolean = true,
 
     val heartRate: HeartRateMonitoringState = HeartRateMonitoringState(),
@@ -306,7 +308,6 @@ class AirPodsViewModel(
                             ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG,
                             false
                         )
-                        setHeadGesturesEnabled(false)
                         _uiState.update { it.copy(isPremium = false) }
                     }
                 }
@@ -655,13 +656,25 @@ class AirPodsViewModel(
 
     fun startHeadTracking() {
         service.startHeadTracking()
-        _uiState.update { it.copy(headTrackingActive = true) }
+        _uiState.update {
+            it.copy(
+                headTrackingActive = true,
+                headTrackingPacketCount = HeadTracking.packetCount.value
+            )
+        }
     }
 
     fun stopHeadTracking() {
         service.stopHeadTracking()
-        _uiState.update { it.copy(headTrackingActive = false) }
+        _uiState.update {
+            it.copy(
+                headTrackingActive = false,
+                headTrackingPacketCount = HeadTracking.packetCount.value
+            )
+        }
     }
+
+    suspend fun testHeadTracking(): Boolean = service.testHeadTracking()
 
     fun setHeartRateMonitoringEnabled(enabled: Boolean) {
         if (!isReady) return

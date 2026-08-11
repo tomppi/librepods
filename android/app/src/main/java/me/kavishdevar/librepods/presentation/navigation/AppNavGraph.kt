@@ -142,7 +142,7 @@ fun AppNavGraph(
                     Screen.HeadTracking ->
                         NavEntry(screen) {
                             if (!airPodsViewModel.isReady) LoadingScreen()
-                            HeadTrackingScreen(airPodsViewModel, ::navigateToPurchase)
+                            HeadTrackingScreen(airPodsViewModel)
                         }
 
                     Screen.HeartRateTest ->
