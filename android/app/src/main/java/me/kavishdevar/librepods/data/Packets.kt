@@ -250,7 +250,5 @@ fun isHeadTrackingData(data: ByteArray): Boolean {
     // Head-tracking sensor data is streamed as RTBuddy "SensorDataWX" frames
     // (AACP BuddyCommand 0x17, RTBuddy descriptor 0x00100000). Validate the
     // frame structurally instead of matching magic length bytes.
-    if (!RtBuddySensorData.isSensorDataWxFrame(data)) return false
-    val motion = RtBuddySensorData.parseMotionCommandPayloads(data) ?: return false
-    return motion.payloads.isNotEmpty()
+    return RtBuddySensorData.isSensorDataWxFrame(data)
 }

@@ -57,10 +57,11 @@ object HeadTracking {
     private const val ACCEL_VERTICAL_OFFSET = 53
 
     fun processPacket(packet: ByteArray) {
-        // Gate extraction behind proper RTBuddy/SensorDataWX validation so only real
-        // motion-sensor frames are interpreted as head-tracking data.
-        val motion = RtBuddySensorData.parseMotionCommandPayloads(packet) ?: return
-        if (motion.payloads.isEmpty()) return
+        // Validate the frame structurally (RTBuddy SensorDataWX) before reading the
+        // documented sensor field offsets. Head-tracking frames carry orientation and
+        // acceleration at fixed positions in the frame, unlike heart-rate frames which
+        // nest the payload inside a Command sub-message.
+        if (!RtBuddySensorData.isSensorDataWxFrame(packet)) return
         if (packet.size <= ACCEL_VERTICAL_OFFSET + 1) return
 
         _packetCount.value = _packetCount.value + 1
