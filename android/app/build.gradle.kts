@@ -86,6 +86,11 @@ android {
             dimension = "env"
             buildConfigField("Boolean", "PLAY_BUILD", "false")
         }
+        create("coexist") {
+            dimension = "env"
+            applicationIdSuffix = ".hearttest"
+            buildConfigField("Boolean", "PLAY_BUILD", "false")
+        }
         create("play") {
             dimension = "env"
             buildConfigField("Boolean", "PLAY_BUILD", "true")
@@ -129,6 +134,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.health.connect.client)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
